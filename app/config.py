@@ -12,6 +12,7 @@ DEFAULTS = {
     "secret": None,                            # секрет подписи сессий (генерит setup.py)
     "password": None,                          # {"salt", "hash", "iterations"} — PBKDF2
     "rg": os.path.join(os.path.expanduser("~"), "bin", "rg"),  # путь к ripgrep
+    "search_timeout": 240,              # лимит поиска по содержимому, секунд
 }
 
 

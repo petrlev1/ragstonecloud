@@ -26,6 +26,7 @@ PW = cfg["password"]
 SESSION_DAYS = int(cfg.get("session_days", 30))
 HIDE_DOT = bool(cfg.get("hide_dot", True))
 RG = cfg.get("rg") or os.path.expanduser("~/bin/rg")
+SEARCH_TIMEOUT = int(cfg.get("search_timeout", 240))
 INDEX = os.path.join(cfg_mod.BASE, "static", "index.html")
 LOGIN_COOKIE = "cl_session"
 
@@ -284,14 +285,14 @@ def api_search(q: str, path: str = "", _=Depends(require_auth)):
             st = os.stat(abs_path)
         except OSError:
             return
-        found[rel] = {"name": os.path.basename(rel), "path": rel, "type": "file",
+        found[rel] = {"name": os.path.basename(rel), "rel": rel, "type": "file",
                       "size": st.st_size, "mtime": int(st.st_mtime)}
 
     # 1) совпадение в имени файла
     try:
         r = subprocess.run([RG, "--files", "--hidden", "--no-messages",
                             *SEARCH_GLOBS, start],
-                           capture_output=True, text=True, timeout=45)
+                           capture_output=True, text=True, timeout=SEARCH_TIMEOUT)
         for line in r.stdout.splitlines():
             if ql in os.path.basename(line).lower():
                 add(line)
@@ -304,7 +305,7 @@ def api_search(q: str, path: str = "", _=Depends(require_auth)):
     try:
         r = subprocess.run([RG, "-l", "-F", "-i", "--hidden", "--no-messages",
                             "--max-filesize", "50M", *SEARCH_GLOBS, "-e", q, start],
-                           capture_output=True, text=True, timeout=45)
+                           capture_output=True, text=True, timeout=SEARCH_TIMEOUT)
         for line in r.stdout.splitlines():
             add(line)
             if len(found) >= 300:
@@ -315,5 +316,6 @@ def api_search(q: str, path: str = "", _=Depends(require_auth)):
     resp: dict = {"path": storage.rel_of(start), "q": q,
                   "items": sorted(found.values(), key=lambda e: e["name"].lower())}
     if timed_out:
-        resp["note"] = "Поиск не успел закончиться — показана часть результатов"
+        resp["note"] = (f"Поиск по содержимому занял больше {SEARCH_TIMEOUT} с — показана часть результатов. "
+                 "Заходи в нужную папку: поиск идёт по текущей.")
     return resp

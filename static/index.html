@@ -298,14 +298,15 @@ async function runSearch(){
   const q = $("q").value.trim();
   if (!q || S.busy) return;
   S.busy = true;
-  setNote("Ищу…");
+  const t0 = Date.now();
+  const timer = setInterval(() => setNote(`Ищу… ${Math.round((Date.now() - t0) / 1000)} с`), 1000);
   try {
     const data = await api("/api/search?q=" + encodeURIComponent(q) + "&path=" + encodeURIComponent(S.cur || ""));
     S.search = { q };
     setNote(data.note || "");
     render(data.items);
   } catch (e) { if (e.message !== "Требуется вход") toast(e.message, true); }
-  finally { S.busy = false; }
+  finally { clearInterval(timer); S.busy = false; }
 }
 function refresh(){
   if (S.search) { $("q").value = S.search.q; runSearch(); }
