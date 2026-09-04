@@ -34,7 +34,9 @@
   .nm .ic{font-size:16px}
   .sub{color:var(--muted);font-size:12px;margin-left:24px;word-break:break-all}
   .acts{display:flex;gap:6px;justify-content:flex-end}
-  .acts button{font-size:12px;padding:3px 8px}
+  .acts button,.acts a{font-size:12px;padding:3px 8px;text-decoration:none;display:inline-block;line-height:1.5}
+  .acts a{color:var(--text);border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer}
+  .acts a:hover{background:#f0f2f5}
   .acts .del{color:var(--danger)}
   .empty{text-align:center;color:var(--muted);padding:40px 0}
   .note{padding:8px 12px;margin:10px 0;background:#fff8e1;border:1px solid #f0df9a;border-radius:6px}
@@ -237,6 +239,11 @@ function makeRow(item, inSearch){
     acts.appendChild(b);
     return b;
   };
+  const exp = document.createElement("a");
+  exp.textContent = "📂";
+  exp.title = "Показать в проводнике Windows (диск Z:)";
+  exp.href = "cloudopen:" + item.rel.split("/").map(encodeURIComponent).join("/");
+  acts.appendChild(exp);
   btn("⬇", null, () => location.href = "/api/download?path=" + encodeURIComponent(item.rel));
   btn("Переим.", null, rename);
   btn("Перенести", null, move);
