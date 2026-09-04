@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Облако</title>
+<style>
+  :root{
+    --accent:#1f6feb; --border:#d9dde3; --bg:#f7f8fa; --muted:#6a737d;
+    --text:#1f2328; --danger:#d1242f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--text);background:var(--bg)}
+  .hidden{display:none!important}
+  header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:#fff;border-bottom:1px solid var(--border);position:sticky;top:0;flex-wrap:wrap}
+  .brand{font-size:18px;font-weight:700;white-space:nowrap}
+  .crumbs{display:flex;align-items:center;gap:2px;flex:1;min-width:150px;overflow-x:auto;white-space:nowrap}
+  .crumbs a{color:var(--accent);text-decoration:none;padding:2px 4px;border-radius:4px}
+  .crumbs a:hover{background:#e8f0fe}
+  .crumbs .sep{color:var(--muted)}
+  #q{min-width:180px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font:inherit}
+  button{font:inherit;padding:6px 12px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer}
+  button:hover{background:#f0f2f5}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{filter:brightness(1.08)}
+  main{max-width:1100px;margin:0 auto;padding:14px 16px 80px}
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #eceff2;vertical-align:middle}
+  th{background:#f2f4f7;color:#57606a;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+  tbody tr:hover{background:#f6f9fe}
+  .num{text-align:right;white-space:nowrap}
+  .nm{display:inline-flex;align-items:center;gap:8px;color:var(--text);text-decoration:none;cursor:pointer;word-break:break-all}
+  .nm:hover{color:var(--accent)}
+  .nm .ic{font-size:16px}
+  .sub{color:var(--muted);font-size:12px;margin-left:24px;word-break:break-all}
+  .acts{display:flex;gap:6px;justify-content:flex-end}
+  .acts button{font-size:12px;padding:3px 8px}
+  .acts .del{color:var(--danger)}
+  .empty{text-align:center;color:var(--muted);padding:40px 0}
+  .note{padding:8px 12px;margin:10px 0;background:#fff8e1;border:1px solid #f0df9a;border-radius:6px}
+  #prog{position:fixed;left:0;right:0;bottom:0;height:4px;background:transparent;z-index:50}
+  #prog .bar{height:100%;width:0;background:var(--accent);transition:width .2s}
+  #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#24292f;color:#fff;padding:10px 18px;border-radius:8px;z-index:60;opacity:0;transition:opacity .25s;pointer-events:none;max-width:80vw}
+  #toast.err{background:var(--danger)}
+  /* вход */
+  #login{max-width:340px;margin:12vh auto;background:#fff;border:1px solid var(--border);border-radius:12px;padding:28px}
+  #login h1{margin:0 0 4px;font-size:22px}
+  #login p{margin:0 0 16px;color:var(--muted)}
+  #login input{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font:inherit;margin-bottom:10px}
+  #login .err{color:var(--danger);min-height:18px;font-size:13px;margin-bottom:6px}
+  /* диалог */
+  dialog{border:1px solid var(--border);border-radius:10px;padding:0;min-width:320px}
+  dialog form{padding:16px}
+  dialog h3{margin:0 0 12px;font-size:15px;word-break:break-word}
+  dialog input{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font:inherit}
+  .dlg-btns{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+</style>
+</head>
+<body>
+
+<div id="login" class="hidden">
+  <h1>☁️ Облако</h1>
+  <p>Вход по паролю</p>
+  <form id="loginForm">
+    <input type="password" id="pw" placeholder="Пароль" autofocus autocomplete="current-password">
+    <div class="err" id="loginErr"></div>
+    <button type="submit" class="primary" style="width:100%">Войти</button>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <div class="brand">☁️ Облако</div>
+    <div class="crumbs" id="crumbs"></div>
+    <input id="q" placeholder="Поиск по имени и содержимому…" autocomplete="off">
+    <button id="btnUpload" title="Загрузить файлы в текущую папку">⬆ Загрузить</button>
+    <button id="btnFolder">＋ Папка</button>
+    <button id="btnLogout">Выход</button>
+  </header>
+  <main>
+    <div id="note" class="note hidden"></div>
+    <div id="empty" class="empty hidden"></div>
+    <table id="tbl" class="hidden">
+      <thead><tr><th>Имя</th><th class="num">Размер</th><th class="num">Изменён</th><th style="width:250px"></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </main>
+  <input type="file" id="fileInput" multiple class="hidden">
+</div>
+
+<dialog id="dlg">
+  <form method="dialog" id="dlgForm">
+    <h3 id="dlgTitle"></h3>
+    <input id="dlgInput" autocomplete="off">
+    <div class="dlg-btns">
+      <button type="button" id="dlgCancel">Отмена</button>
+      <button type="button" id="dlgOk" class="primary">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="prog"><div class="bar" id="progBar"></div></div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const S = { cur: "", search: null, busy: false };
+
+/* ---------- утилиты ---------- */
+function fmtSize(n){
+  if (n == null) return "";
+  if (n < 1024) return n + " Б";
+  const u = ["КБ","МБ","ГБ","ТБ"]; let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return n.toFixed(n < 10 ? 1 : 0) + " " + u[i];
+}
+function fmtDate(ts){
+  const d = new Date(ts * 1000), p = x => String(x).padStart(2, "0");
+  return `${p(d.getDate())}.${p(d.getMonth()+1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function iconOf(name, isDir){
+  if (isDir) return "📁";
+  const e = (name.split(".").pop() || "").toLowerCase();
+  if (["png","jpg","jpeg","gif","webp","svg","bmp","heic"].includes(e)) return "🖼";
+  if (["mp4","mkv","avi","mov","webm","m4v"].includes(e)) return "🎬";
+  if (["mp3","wav","flac","ogg","m4a","aac"].includes(e)) return "🎵";
+  if (e === "pdf") return "📕";
+  if (["zip","rar","7z","tar","gz","bz2","xz"].includes(e)) return "🗜";
+  if (["py","js","ts","html","css","json","c","cpp","h","java","go","rs","sh","sql","yaml","yml","toml","md","txt","log","xml","csv"].includes(e)) return "📄";
+  return "📄";
+}
+function toast(msg, isErr){
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = isErr ? "err" : "";
+  t.style.opacity = 1;
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.style.opacity = 0, 3500);
+}
+function setNote(text){ $("note").textContent = text || ""; $("note").classList.toggle("hidden", !text); }
+
+/* ---------- api ---------- */
+async function api(url, opts = {}){
+  const r = await fetch(url, opts);
+  let data = null;
+  try { data = await r.json(); } catch (e) {}
+  if (r.status === 401) { showLogin(); throw new Error("Требуется вход"); }
+  if (!r.ok) throw new Error((data && data.error) || ("Ошибка " + r.status));
+  return data;
+}
+function post(url, body){
+  return api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
+/* ---------- диалог «спросить строку» ---------- */
+function ask(title, placeholder, value = ""){
+  return new Promise(resolve => {
+    $("dlgTitle").textContent = title;
+    $("dlgInput").value = value;
+    $("dlgInput").placeholder = placeholder || "";
+    const done = v => { $("dlg").close(); resolve(v); };
+    $("dlgOk").onclick = () => done($("dlgInput").value.trim() || null);
+    $("dlgCancel").onclick = () => done(null);
+    $("dlgInput").onkeydown = e => { if (e.key === "Enter") done($("dlgInput").value.trim() || null); };
+    $("dlg").showModal();
+    $("dlgInput").focus();
+    $("dlgInput").select();
+  });
+}
+
+/* ---------- навигация и отрисовка ---------- */
+function renderCrumbs(){
+  const box = $("crumbs");
+  box.textContent = "";
+  if (S.search) {
+    const a = document.createElement("a");
+    a.textContent = "✕ Поиск: «" + S.search.q + "»";
+    a.title = "Вернуться в папку";
+    a.onclick = () => { S.search = null; $("q").value = ""; loadDir(S.cur); };
+    box.appendChild(a);
+    return;
+  }
+  const parts = S.cur ? S.cur.split("/") : [];
+  let acc = "";
+  const add = (label, path) => {
+    const a = document.createElement("a");
+    a.textContent = label;
+    a.onclick = e => { e.preventDefault(); loadDir(path); };
+    box.appendChild(a);
+    if (path !== S.cur) box.appendChild(Object.assign(document.createElement("span"), { className: "sep", textContent: "›" }));
+  };
+  add("Облако", "");
+  for (const p of parts) { acc = acc ? acc + "/" + p : p; add(p, acc); }
+}
+
+function makeRow(item, inSearch){
+  const tr = document.createElement("tr");
+  const tdName = document.createElement("td");
+  const a = document.createElement("a");
+  a.className = "nm";
+  const ic = document.createElement("span"); ic.className = "ic"; ic.textContent = iconOf(item.name, item.type === "dir");
+  const tx = document.createElement("span"); tx.textContent = item.name;
+  a.appendChild(ic); a.appendChild(tx);
+  if (item.type === "dir") {
+    a.href = "#";
+    a.onclick = e => { e.preventDefault(); loadDir(item.rel); };
+  } else {
+    a.href = "/api/file?path=" + encodeURIComponent(item.rel);
+    a.target = "_blank"; a.rel = "noopener";
+    a.title = "Открыть в новой вкладке";
+  }
+  tdName.appendChild(a);
+  if (inSearch) {
+    const sub = document.createElement("div");
+    sub.className = "sub"; sub.textContent = "…/" + item.rel;
+    tdName.appendChild(sub);
+  }
+  tr.appendChild(tdName);
+
+  const tdSize = document.createElement("td");
+  tdSize.className = "num"; tdSize.textContent = item.type === "dir" ? "" : fmtSize(item.size);
+  tr.appendChild(tdSize);
+
+  const tdM = document.createElement("td");
+  tdM.className = "num"; tdM.textContent = item.mtime ? fmtDate(item.mtime) : "";
+  tr.appendChild(tdM);
+
+  const tdA = document.createElement("td");
+  const acts = document.createElement("div"); acts.className = "acts";
+  const btn = (label, cls, fn) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.onclick = e => { e.stopPropagation(); fn(); };
+    acts.appendChild(b);
+    return b;
+  };
+  btn("⬇", null, () => location.href = "/api/download?path=" + encodeURIComponent(item.rel));
+  btn("Переим.", null, rename);
+  btn("Перенести", null, move);
+  btn("Удалить", "del", del);
+  tdA.appendChild(acts);
+  tr.appendChild(tdA);
+
+  function rename(){
+    ask("Переименовать «" + item.name + "»", "новое имя", item.name).then(v => {
+      if (!v || v === item.name) return;
+      post("/api/rename", { path: item.rel, name: v }).then(refresh).catch(e => toast(e.message, true));
+    });
+  }
+  function move(){
+    ask("Переместить «" + item.name + "» — в какую папку?", "путь от корня, напр. comp/docs (пусто = корень)").then(v => {
+      if (v === null) return;
+      post("/api/move", { path: item.rel, dest: v }).then(refresh).catch(e => toast(e.message, true));
+    });
+  }
+  function del(){
+    const q = item.type === "dir"
+      ? "Удалить папку «" + item.name + "» со всем содержимым?" : "Удалить файл «" + item.name + "»?";
+    if (!confirm(q)) return;
+    post("/api/delete", { path: item.rel }).then(refresh).catch(e => toast(e.message, true));
+  }
+  return tr;
+}
+
+function render(items){
+  renderCrumbs();
+  const rows = $("rows");
+  rows.textContent = "";
+  const empty = $("empty"), tbl = $("tbl");
+  if (!items.length) {
+    tbl.classList.add("hidden");
+    empty.classList.remove("hidden");
+    empty.textContent = S.search ? "Ничего не найдено" : "Папка пуста";
+    $("btnUpload").classList.toggle("hidden", !!S.search);
+    $("btnFolder").classList.toggle("hidden", !!S.search);
+    return;
+  }
+  empty.classList.add("hidden");
+  tbl.classList.remove("hidden");
+  for (const it of items) rows.appendChild(makeRow(it, !!S.search));
+  $("btnUpload").classList.toggle("hidden", !!S.search);
+  $("btnFolder").classList.toggle("hidden", !!S.search);
+}
+
+async function loadDir(path){
+  S.cur = path || ""; S.search = null; $("q").value = "";
+  S.busy = true;
+  try {
+    const data = await api("/api/list?path=" + encodeURIComponent(path || ""));
+    render(data.items);
+  } catch (e) { if (e.message !== "Требуется вход") toast(e.message, true); }
+  finally { S.busy = false; }
+}
+
+async function runSearch(){
+  const q = $("q").value.trim();
+  if (!q || S.busy) return;
+  S.busy = true;
+  setNote("Ищу…");
+  try {
+    const data = await api("/api/search?q=" + encodeURIComponent(q) + "&path=" + encodeURIComponent(S.cur || ""));
+    S.search = { q };
+    setNote(data.note || "");
+    render(data.items);
+  } catch (e) { if (e.message !== "Требуется вход") toast(e.message, true); }
+  finally { S.busy = false; }
+}
+function refresh(){
+  if (S.search) { $("q").value = S.search.q; runSearch(); }
+  else loadDir(S.cur);
+}
+
+/* ---------- загрузка файлов ---------- */
+function uploadFiles(list){
+  if (!list.length || S.search) return;
+  const fd = new FormData();
+  for (const f of list) fd.append("files", f);
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/upload?path=" + encodeURIComponent(S.cur || ""));
+  const bar = $("progBar");
+  bar.style.width = "0%";
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable) bar.style.width = Math.round(e.loaded * 100 / e.total) + "%";
+  };
+  xhr.onload = () => {
+    bar.style.width = "0%";
+    if (xhr.status === 401) { showLogin(); return; }
+    let data = null; try { data = JSON.parse(xhr.responseText); } catch (e) {}
+    if (xhr.status >= 200 && xhr.status < 300) {
+      toast("Загружено файлов: " + (data && data.uploaded != null ? data.uploaded : list.length));
+      refresh();
+    } else toast((data && data.error) || ("Ошибка " + xhr.status), true);
+  };
+  xhr.onerror = () => { bar.style.width = "0%"; toast("Ошибка сети", true); };
+  xhr.send(fd);
+}
+
+/* ---------- вход/выход ---------- */
+function showLogin(){
+  $("app").classList.add("hidden");
+  $("login").classList.remove("hidden");
+  $("pw").focus();
+}
+function showApp(){
+  $("login").classList.add("hidden");
+  $("app").classList.remove("hidden");
+}
+async function init(){
+  try {
+    await api("/api/me");
+    showApp();
+    await loadDir("");
+  } catch (e) { showLogin(); }
+}
+
+/* ---------- события ---------- */
+$("loginForm").onsubmit = async e => {
+  e.preventDefault();
+  $("loginErr").textContent = "";
+  try {
+    await post("/api/login", { password: $("pw").value });
+    $("pw").value = "";
+    showApp();
+    await loadDir("");
+  } catch (err) { $("loginErr").textContent = err.message; }
+};
+$("btnLogout").onclick = async () => { try { await post("/api/logout", {}); } catch (e) {} showLogin(); };
+$("q").onkeydown = e => { if (e.key === "Enter") runSearch(); };
+$("btnUpload").onclick = () => $("fileInput").click();
+$("fileInput").onchange = () => { uploadFiles($("fileInput").files); $("fileInput").value = ""; };
+$("btnFolder").onclick = async () => {
+  const name = await ask("Новая папка в «" + (S.cur || "Облако") + "»", "имя папки");
+  if (name) post("/api/folder", { path: S.cur, name }).then(refresh).catch(e => toast(e.message, true));
+};
+// drag & drop всей страницей
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => {
+  e.preventDefault();
+  if ($("app").classList.contains("hidden")) return;
+  uploadFiles(e.dataTransfer.files);
+});
+
+init();
+</script>
+</body>
+</html>
