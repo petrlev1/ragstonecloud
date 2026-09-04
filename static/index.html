@@ -73,6 +73,7 @@
     <div class="brand">☁️ Облако</div>
     <div class="crumbs" id="crumbs"></div>
     <input id="q" placeholder="Поиск по имени и содержимому…" autocomplete="off">
+    <button id="btnIndex" title="Обновить индекс поиска">⟳ Индекс</button>
     <button id="btnUpload" title="Загрузить файлы в текущую папку">⬆ Загрузить</button>
     <button id="btnFolder">＋ Папка</button>
     <button id="btnLogout">Выход</button>
@@ -375,6 +376,23 @@ $("btnFolder").onclick = async () => {
   const name = await ask("Новая папка в «" + (S.cur || "Облако") + "»", "имя папки");
   if (name) post("/api/folder", { path: S.cur, name }).then(refresh).catch(e => toast(e.message, true));
 };
+// индекс: кнопка обновления + ожидание завершения
+$("btnIndex").onclick = async () => {
+  try {
+    const r = await post("/api/index/sync", {});
+    toast(r.started ? "Обновление индекса запущено" : "Индексация уже идёт…");
+    const t = setInterval(async () => {
+      try {
+        const s = await api("/api/index");
+        if (!s.running) {
+          clearInterval(t);
+          toast(s.errors ? "Индекс обновлён, ошибок: " + s.errors : "Индекс обновлён: " + s.files + " файлов", !!s.errors);
+        }
+      } catch (e) { clearInterval(t); }
+    }, 2500);
+  } catch (e) { toast(e.message, true); }
+};
+
 // drag & drop всей страницей
 window.addEventListener("dragover", e => e.preventDefault());
 window.addEventListener("drop", e => {

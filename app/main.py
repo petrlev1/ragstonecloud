@@ -6,7 +6,6 @@
 import mimetypes
 import os
 import shutil
-import subprocess
 import tempfile
 import time
 
@@ -17,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from app import auth, config as cfg_mod, storage
+from app import auth, config as cfg_mod, indexer, storage
 
 cfg = cfg_mod.load()
 storage.ROOT = cfg["root"]
@@ -25,17 +24,11 @@ SECRET = cfg["secret"]
 PW = cfg["password"]
 SESSION_DAYS = int(cfg.get("session_days", 30))
 HIDE_DOT = bool(cfg.get("hide_dot", True))
-RG = cfg.get("rg") or os.path.expanduser("~/bin/rg")
-SEARCH_TIMEOUT = int(cfg.get("search_timeout", 240))
 INDEX = os.path.join(cfg_mod.BASE, "static", "index.html")
 LOGIN_COOKIE = "cl_session"
 
-SEARCH_GLOBS = [
-    "--glob", "!**/.*",          # скрытые файлы/папки (и .git, .cache…)
-    "--glob", "!venv/**", "--glob", "!**/venv/**",
-    "--glob", "!**/node_modules/**",
-    "--glob", "!**/__pycache__/**",
-]
+# полнотекстовый индекс (PostgreSQL): схема + фоновая синхронизация при старте
+indexer.init(cfg)
 
 app = FastAPI(title="Облако", docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=os.path.join(cfg_mod.BASE, "static")), name="static")
@@ -192,6 +185,7 @@ async def api_upload(path: str = "", files: list[UploadFile] = File(...),
         with open(target, "wb") as fh:
             while chunk := await up.read(1 << 20):
                 fh.write(chunk)
+        indexer.index_path(storage.rel_of(target))
         n += 1
     return {"ok": True, "uploaded": n}
 
@@ -220,7 +214,9 @@ def api_rename(body: RenameBody, _=Depends(require_auth)):
         raise HTTPException(403, "Недопустимое имя")
     if os.path.exists(dst):
         raise HTTPException(409, "Уже существует")
+    old_rel = storage.rel_of(src)
     os.rename(src, dst)
+    indexer.rename_path(old_rel, storage.rel_of(dst))
     return {"ok": True}
 
 
@@ -238,7 +234,9 @@ def api_move(body: MoveBody, _=Depends(require_auth)):
     dst = os.path.join(dst_dir, os.path.basename(src))
     if os.path.exists(dst):
         raise HTTPException(409, "В папке назначения уже есть такое имя")
+    old_rel = storage.rel_of(src)
     shutil.move(src, dst)
+    indexer.rename_path(old_rel, storage.rel_of(dst))
     return {"ok": True}
 
 
@@ -253,10 +251,13 @@ def api_delete(body: PathBody, _=Depends(require_auth)):
         os.remove(p)
     else:
         raise HTTPException(404, "Не найдено")
+    indexer.delete_path(storage.rel_of(p))
     return {"ok": True}
 
 
 # ---------- поиск (имена + содержимое через ripgrep) ----------
+
+# ---------- поиск (PostgreSQL: содержимое + имя) ----------
 
 @app.get("/api/search")
 def api_search(q: str, path: str = "", _=Depends(require_auth)):
@@ -268,54 +269,35 @@ def api_search(q: str, path: str = "", _=Depends(require_auth)):
     start = storage.safe(path)
     if not os.path.isdir(start):
         raise HTTPException(404, "Папка не найдена")
-    if not os.path.exists(RG):
-        raise HTTPException(500, "ripgrep не установлен (ожидается в ~/bin/rg)")
+    if not indexer.ENABLED:
+        raise HTTPException(500, "Индекс не настроен: в config.json нет раздела db")
 
-    ql = q.lower()
-    found: dict[str, dict] = {}
-    timed_out = False
-
-    def add(abs_path: str) -> None:
-        if len(found) >= 300 or not os.path.isfile(abs_path) or os.path.islink(abs_path):
-            return
-        rel = storage.rel_of(abs_path)
-        if rel in found:
-            return
-        try:
-            st = os.stat(abs_path)
-        except OSError:
-            return
-        found[rel] = {"name": os.path.basename(rel), "rel": rel, "type": "file",
-                      "size": st.st_size, "mtime": int(st.st_mtime)}
-
-    # 1) совпадение в имени файла
-    try:
-        r = subprocess.run([RG, "--files", "--hidden", "--no-messages",
-                            *SEARCH_GLOBS, start],
-                           capture_output=True, text=True, timeout=SEARCH_TIMEOUT)
-        for line in r.stdout.splitlines():
-            if ql in os.path.basename(line).lower():
-                add(line)
-                if len(found) >= 300:
-                    break
-    except subprocess.TimeoutExpired:
-        timed_out = True
-
-    # 2) совпадение по содержимому
-    try:
-        r = subprocess.run([RG, "-l", "-F", "-i", "--hidden", "--no-messages",
-                            "--max-filesize", "50M", *SEARCH_GLOBS, "-e", q, start],
-                           capture_output=True, text=True, timeout=SEARCH_TIMEOUT)
-        for line in r.stdout.splitlines():
-            add(line)
-            if len(found) >= 300:
-                break
-    except subprocess.TimeoutExpired:
-        timed_out = True
-
-    resp: dict = {"path": storage.rel_of(start), "q": q,
-                  "items": sorted(found.values(), key=lambda e: e["name"].lower())}
-    if timed_out:
-        resp["note"] = (f"Поиск по содержимому занял больше {SEARCH_TIMEOUT} с — показана часть результатов. "
-                 "Заходи в нужную папку: поиск идёт по текущей.")
+    scope = storage.rel_of(start)
+    if indexer.count() == 0:
+        st = indexer.status()
+        if not st["running"]:
+            indexer.sync_start()
+        return {"path": scope, "q": q, "items": [],
+                "note": "Индекс пуст — запущено первичное индексирование, "
+                        "повтори поиск через минуту"}
+    items = indexer.search(q, scope_rel=scope)
+    resp = {"path": scope, "q": q, "items": items}
+    st = indexer.status()
+    if st["running"]:
+        resp["note"] = f"Индекс обновляется ({st['done']}/{st['total']}) — возможна неполнота"
     return resp
+
+
+@app.get("/api/index")
+def api_index(_=Depends(require_auth)):
+    st = indexer.status()
+    return {"enabled": indexer.ENABLED, "files": indexer.count(),
+            "running": st["running"], "phase": st["phase"],
+            "done": st["done"], "total": st["total"],
+            "last_sync": st["last_sync"], "errors": st["errors"]}
+
+
+@app.post("/api/index/sync")
+def api_index_sync(_=Depends(require_auth)):
+    started = indexer.sync_start()
+    return {"ok": True, "started": started}
