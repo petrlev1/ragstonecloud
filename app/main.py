@@ -200,6 +200,7 @@ def api_mkdir(body: MkdirBody, _=Depends(require_auth)):
     if os.path.exists(target):
         raise HTTPException(409, "Уже существует")
     os.mkdir(target)
+    indexer.index_dir(storage.rel_of(target))
     return {"ok": True}
 
 

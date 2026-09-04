@@ -73,6 +73,9 @@ def init(cfg: dict):
         conn.execute(
             "CREATE INDEX IF NOT EXISTS files_name_trgm "
             "ON files USING GIN(name gin_trgm_ops)")
+        # папки тоже индексируются (поиск по названиям папок)
+        conn.execute("ALTER TABLE files ADD COLUMN IF NOT EXISTS "
+                     "is_dir BOOLEAN NOT NULL DEFAULT FALSE")
     log(f"схема готова, root={ROOT}")
     sync_start(background=True)
 
@@ -110,19 +113,21 @@ def _is_skipped_dir(name: str) -> bool:
 
 # ---------- точечные операции (вызываются из API при изменениях) ----------
 
-def _upsert(conn, rel: str, mtime: int, size: int, content: str | None):
+def _upsert(conn, rel: str, mtime: int, size: int, content: str | None,
+           is_dir: bool = False):
     # PG запрещает NUL-байты, а tsvector ограничен 1 МБ — вычищаем и урезаем
     if content:
         content = content.replace("\x00", "") or None
     if content and len(content) > 400_000:
         content = content[:400_000]
     conn.execute(
-        """INSERT INTO files(path, name, mtime, size, content, tsv)
-           VALUES(%s, %s, %s, %s, %s, to_tsvector('russian', %s))
+        """INSERT INTO files(path, name, mtime, size, content, tsv, is_dir)
+           VALUES(%s, %s, %s, %s, %s, to_tsvector('russian', %s), %s)
            ON CONFLICT (path) DO UPDATE SET name=EXCLUDED.name,
              mtime=EXCLUDED.mtime, size=EXCLUDED.size,
-             content=EXCLUDED.content, tsv=EXCLUDED.tsv""",
-        (rel, os.path.basename(rel), mtime, size, content, content))
+             content=EXCLUDED.content, tsv=EXCLUDED.tsv,
+             is_dir=EXCLUDED.is_dir""",
+        (rel, os.path.basename(rel), mtime, size, content, content, is_dir))
 
 
 def index_path(rel: str):
@@ -137,6 +142,21 @@ def index_path(rel: str):
         content = extract_text(abs_path)
         with _connect() as conn:
             _upsert(conn, rel, int(st.st_mtime), st.st_size, content)
+    except OSError:
+        pass
+
+
+def index_dir(rel: str):
+    """Проиндексировать папку (после создания в облаке)."""
+    if not ENABLED or not rel:
+        return
+    abs_path = os.path.join(ROOT, rel)
+    try:
+        st = os.stat(abs_path)
+        if not os.path.isdir(abs_path) or os.path.islink(abs_path):
+            return
+        with _connect() as conn:
+            _upsert(conn, rel, int(st.st_mtime), st.st_size, None, True)
     except OSError:
         pass
 
@@ -222,6 +242,16 @@ def _sync_run():
                     continue
                 rel = os.path.relpath(full, ROOT)
                 disk[rel] = (int(st.st_mtime), st.st_size)
+            for dn in dirs:
+                full_d = os.path.join(root, dn)
+                rel_d = os.path.relpath(full_d, ROOT)
+                try:
+                    st = os.stat(full_d)
+                    if not os.path.isdir(full_d) or os.path.islink(full_d):
+                        continue
+                except OSError:
+                    continue
+                disk[rel_d] = (int(st.st_mtime), st.st_size)
 
         log(f"sync: обход завершён, на диске {len(disk)} файлов")
         with _connect() as conn:
@@ -253,11 +283,14 @@ def _sync_run():
                     try:
                         full = os.path.join(ROOT, rel)
                         st = os.stat(full)
-                        if st.st_size <= MAX_FILE:
-                            content = extract_text(full)
+                        if os.path.isdir(full) and not os.path.islink(full):
+                            _upsert(conn, rel, int(st.st_mtime), st.st_size,
+                                    None, True)
                         else:
-                            content = None
-                        _upsert(conn, rel, int(st.st_mtime), st.st_size, content)
+                            content = (extract_text(full)
+                                       if st.st_size <= MAX_FILE else None)
+                            _upsert(conn, rel, int(st.st_mtime), st.st_size,
+                                    content, False)
                     except Exception as e:
                         log(f"sync: пропущен {rel!r}: {e}")
                     done += 1
@@ -293,7 +326,7 @@ def search(q: str, scope_rel: str = "", limit: int = 300) -> list[dict]:
         return []
     like = "%" + _like_escape(q) + "%"
     sql = """
-        SELECT path, name, size, mtime,
+        SELECT path, name, size, mtime, is_dir,
                (name ILIKE %s) AS name_hit,
                ts_rank(tsv, plainto_tsquery('russian', %s)) AS rank
         FROM files
@@ -315,7 +348,8 @@ def search(q: str, scope_rel: str = "", limit: int = 300) -> list[dict]:
     except psycopg.Error:
         return []  # пустой/мусорный запрос — просто ничего не нашли
     out = []
-    for path, name, size, mtime, _hit, _rank in rows:
-        out.append({"name": name, "rel": path, "type": "file",
+    for path, name, size, mtime, is_dir, _hit, _rank in rows:
+        out.append({"name": name, "rel": path,
+                    "type": "dir" if is_dir else "file",
                     "size": size, "mtime": int(mtime) if mtime else None})
     return out
