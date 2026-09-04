@@ -23,6 +23,8 @@ TEXT_EXTS = {
 }
 PDF_EXTS = {".pdf"}
 DOCX_EXTS = {".docx"}
+XLSX_EXTS = {".xlsx", ".xlsm"}   # openpyxl
+XLS_EXTS = {".xls"}              # xlrd (старый бинарный Excel)
 SKIP_DIRS = {"venv", "node_modules", "__pycache__", ".git"}
 MAX_FILE = 50 * 1024 * 1024   # файлы больше не индексируем (как rg --max-filesize)
 MAX_TEXT = 2_000_000          # потолок извлекаемого текста на файл (символов)
@@ -99,6 +101,42 @@ def extract_text(abs_path: str) -> str | None:
             d = docx.Document(abs_path)
             text = "\n".join(p.text for p in d.paragraphs)
             return text[:MAX_TEXT] or None
+        if ext in XLSX_EXTS:
+            import openpyxl
+            wb = openpyxl.load_workbook(abs_path, read_only=True, data_only=True)
+            out: list[str] = []
+            total = 0
+            for ws in wb.worksheets:
+                for row in ws.iter_rows(values_only=True):
+                    cells = [str(v) for v in row if v is not None and str(v).strip()]
+                    if cells:
+                        line = " ".join(cells)
+                        out.append(line)
+                        total += len(line)
+                    if total > MAX_TEXT:
+                        break
+                if total > MAX_TEXT:
+                    break
+            wb.close()
+            return "\n".join(out)[:MAX_TEXT] or None
+        if ext in XLS_EXTS:
+            import xlrd
+            wb = xlrd.open_workbook(abs_path)
+            out = []
+            total = 0
+            for sh in wb.sheets():
+                for r in range(sh.nrows):
+                    vals = [str(sh.cell_value(r, c)).strip() for c in range(sh.ncols)]
+                    vals = [v for v in vals if v]
+                    if vals:
+                        line = " ".join(vals)
+                        out.append(line)
+                        total += len(line)
+                    if total > MAX_TEXT:
+                        break
+                if total > MAX_TEXT:
+                    break
+            return "\n".join(out)[:MAX_TEXT] or None
         if ext in TEXT_EXTS or ext == "":
             with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
                 return f.read(MAX_TEXT + 1)[:MAX_TEXT]
