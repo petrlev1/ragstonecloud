@@ -29,10 +29,10 @@
   th{background:#f2f4f7;color:#57606a;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
   tbody tr:hover{background:#f6f9fe}
   .num{text-align:right;white-space:nowrap}
-  .nm{display:inline-flex;align-items:center;gap:8px;color:var(--text);text-decoration:none;cursor:pointer;word-break:break-all}
+  .nm{display:inline-flex;align-items:center;gap:8px;color:var(--text);text-decoration:none;cursor:pointer;overflow-wrap:anywhere}
   .nm:hover{color:var(--accent)}
   .nm .ic{font-size:16px}
-  .sub{color:var(--muted);font-size:12px;margin-left:24px;word-break:break-all}
+  .sub{color:var(--muted);font-size:12px;margin-left:24px;overflow-wrap:anywhere}
   .acts{display:flex;gap:6px;justify-content:flex-end}
   .acts button,.acts a{font-size:12px;padding:3px 8px;text-decoration:none;display:inline-block;line-height:1.5}
   .acts a{color:var(--text);border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer}
@@ -56,6 +56,35 @@
   dialog h3{margin:0 0 12px;font-size:15px;word-break:break-word}
   dialog input{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font:inherit}
   .dlg-btns{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+
+/* ---- мобильная версия: строки-карточки, без горизонтального скролла ---- */
+@media (max-width:640px){
+  body{font-size:15px}
+  main{padding:10px}
+  header{padding:8px 10px;gap:8px}
+  header .brand{font-size:16px}
+  .crumbs{min-width:40px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  #q{min-width:0;flex:1 1 100%;order:9}
+  header button{padding:5px 10px}
+  thead{display:none}
+  table, tbody{display:block;border:none;background:transparent}
+  #tbl{border:none}
+  tr{display:grid;grid-template-areas:"name acts" "size date";grid-template-columns:minmax(0,1fr) auto;
+     gap:2px 12px;background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0 0 8px}
+  td{border:none;padding:0}
+  tr > td:nth-child(1){grid-area:name;min-width:0}
+  tr > td:nth-child(2){grid-area:size;font-size:12px;color:var(--muted);text-align:left}
+  tr > td:nth-child(3){grid-area:date;font-size:12px;color:var(--muted);text-align:right}
+  tr > td:nth-child(4){grid-area:acts}
+  .nm{display:flex;width:100%;max-width:100%}
+  .nm .ic{flex:0 0 auto;font-size:17px}
+  .nm span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .sub{margin-left:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .acts{gap:4px;flex-wrap:wrap;justify-content:flex-end;max-width:44vw}
+  .acts button,.acts a{padding:3px 7px;font-size:12px}
+  dialog{min-width:0;max-width:calc(100vw - 20px)}
+  tbody tr:hover{background:#fff}
+}
 </style>
 </head>
 <body>
@@ -207,11 +236,12 @@ function makeRow(item, inSearch){
   a.appendChild(ic); a.appendChild(tx);
   if (item.type === "dir") {
     a.href = "#";
+    a.title = item.name;
     a.onclick = e => { e.preventDefault(); loadDir(item.rel); };
   } else {
     a.href = "/api/file?path=" + encodeURIComponent(item.rel);
     a.target = "_blank"; a.rel = "noopener";
-    a.title = "Открыть в новой вкладке";
+    a.title = item.name;
   }
   tdName.appendChild(a);
   if (inSearch) {
