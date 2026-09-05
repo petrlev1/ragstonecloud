@@ -14,4 +14,6 @@ if [ ! -f config.json ]; then
   ./venv/bin/python app/setup.py
 fi
 
-exec ./venv/bin/python -m uvicorn app.main:app --host "${HOST:-0.0.0.0}" --port "${PORT:-8080}"
+# Облако слушает ТОЛЬКО localhost: наружу его отдаёт Caddy (HTTPS).
+# Если нужно публично без Caddy: HOST=0.0.0.0 ./run.sh
+exec ./venv/bin/python -m uvicorn app.main:app --host "${HOST:-127.0.0.1}" --port "${PORT:-8080}"
