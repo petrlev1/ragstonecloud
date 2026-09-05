@@ -16,4 +16,4 @@ fi
 
 # Облако слушает ТОЛЬКО localhost: наружу его отдаёт Caddy (HTTPS).
 # Если нужно публично без Caddy: HOST=0.0.0.0 ./run.sh
-exec ./venv/bin/python -m uvicorn app.main:app --host "${HOST:-127.0.0.1}" --port "${PORT:-8080}"
+exec ./venv/bin/python -m uvicorn app.main:app --host "${HOST:-127.0.0.1}" --port "${PORT:-8080}" --proxy-headers --forwarded-allow-ips 127.0.0.1

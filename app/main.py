@@ -26,6 +26,8 @@ SESSION_DAYS = int(cfg.get("session_days", 30))
 HIDE_DOT = bool(cfg.get("hide_dot", True))
 INDEX = os.path.join(cfg_mod.BASE, "static", "index.html")
 LOGIN_COOKIE = "cl_session"
+# лог неудачных входов для fail2ban (реальный IP клиента)
+AUTH_LOG = os.path.join(cfg_mod.BASE, "auth_failures.log")
 
 # полнотекстовый индекс (PostgreSQL): схема + фоновая синхронизация при старте
 indexer.init(cfg)
@@ -57,6 +59,23 @@ def require_auth(request: Request):
 _login_attempts: dict[str, list[float]] = {}  # ip -> метки попыток (последняя минута)
 
 
+def _client_ip(request: Request) -> str:
+    """Реальный IP клиента: приложение слушает только localhost за Caddy,
+    который всегда перезаписывает X-Forwarded-For адресом прямого клиента."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
+def _log_auth_fail(ip: str) -> None:
+    try:
+        with open(AUTH_LOG, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S") + f" AUTHFAIL {ip}\n")
+    except OSError:
+        pass
+
+
 def _rate_limited(ip: str) -> bool:
     now = time.time()
     lst = [t for t in _login_attempts.get(ip, []) if now - t < 60]
@@ -73,10 +92,11 @@ class LoginIn(BaseModel):
 
 @app.post("/api/login")
 def login(body: LoginIn, request: Request):
-    ip = request.client.host if request.client else "?"
+    ip = _client_ip(request)
     if _rate_limited(ip):
         raise HTTPException(429, "Слишком много попыток — подожди минуту")
     if not auth.check_password(body.password, PW):
+        _log_auth_fail(ip)
         raise HTTPException(401, "Неверный пароль")
     resp = JSONResponse({"ok": True})
     resp.set_cookie(LOGIN_COOKIE, auth.make_token(SECRET, SESSION_DAYS),
