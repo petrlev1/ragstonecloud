@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Общий доступ</title>
+<style>
+  :root{
+    --accent:#1f6feb; --border:#d9dde3; --bg:#f7f8fa; --muted:#6a737d; --text:#1f2328;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--text);background:var(--bg)}
+  .hidden{display:none!important}
+  header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:#fff;border-bottom:1px solid var(--border);position:sticky;top:0;flex-wrap:wrap}
+  .brand{font-size:18px;font-weight:700;white-space:nowrap}
+  .tag{font-size:12px;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:2px 10px;white-space:nowrap}
+  .crumbs{display:flex;align-items:center;gap:2px;flex:1;min-width:150px;overflow-x:auto;white-space:nowrap}
+  .crumbs a{color:var(--accent);text-decoration:none;padding:2px 4px;border-radius:4px}
+  .crumbs a:hover{background:#e8f0fe}
+  .crumbs .sep{color:var(--muted)}
+  button{font:inherit;padding:6px 12px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;white-space:nowrap}
+  button:hover{background:#f0f2f5}
+  main{max-width:1100px;margin:0 auto;padding:14px 16px 60px}
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #eceff2;vertical-align:middle}
+  th{background:#f2f4f7;color:#57606a;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+  tbody tr:hover{background:#f6f9fe}
+  .num{text-align:right;white-space:nowrap}
+  .nm{display:inline-flex;align-items:center;gap:8px;color:var(--text);text-decoration:none;overflow-wrap:anywhere;max-width:100%}
+  .nm:hover{color:var(--accent)}
+  .nm .ic{font-size:16px}
+  .acts{display:flex;gap:6px;justify-content:flex-end}
+  .acts a,.acts button{font-size:12px;padding:3px 8px;text-decoration:none;display:inline-block;line-height:1.5}
+  .acts a{color:var(--text);border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer}
+  .acts a:hover{background:#f0f2f5}
+  .empty{text-align:center;color:var(--muted);padding:40px 0}
+  #gone{max-width:520px;margin:14vh auto;background:#fff;border:1px solid var(--border);border-radius:12px;padding:28px;text-align:center}
+  #gone h1{margin:0 0 8px;font-size:20px}
+  #gone p{margin:0;color:var(--muted)}
+  /* мобильная версия */
+  @media (max-width:640px){
+    body{font-size:15px}
+    main{padding:10px}
+    header{padding:8px 10px}
+    .crumbs{min-width:40px}
+    thead{display:none}
+    table,tbody{display:block;border:none;background:transparent}
+    tr{display:grid;grid-template-areas:"name acts" "size date";grid-template-columns:minmax(0,1fr) auto;
+       gap:2px 12px;background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0 0 8px}
+    td{border:none;padding:0}
+    tr > td:nth-child(1){grid-area:name;min-width:0}
+    tr > td:nth-child(2){grid-area:size;font-size:12px;color:var(--muted);text-align:left}
+    tr > td:nth-child(3){grid-area:date;font-size:12px;color:var(--muted);text-align:right}
+    tr > td:nth-child(4){grid-area:acts}
+    .acts{gap:4px;flex-wrap:wrap;justify-content:flex-end}
+    tbody tr:hover{background:#fff}
+  }
+</style>
+</head>
+<body>
+
+<div id="gone" class="hidden">
+  <h1>☁️ Ссылка недействительна</h1>
+  <p id="goneMsg">Возможно, доступ к файлу закрыт или файл удалён.</p>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <div class="brand">☁️ Облако</div>
+    <span class="tag">общий доступ</span>
+    <div class="crumbs" id="crumbs"></div>
+    <button id="btnZip" title="Скачать эту папку zip-архивом">⬇ Папка</button>
+  </header>
+  <main>
+    <table id="tbl" class="hidden">
+      <thead><tr><th>Имя</th><th class="num">Размер</th><th class="num">Изменён</th><th style="width:180px"></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" class="empty hidden">Папка пуста</div>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+const m = location.pathname.match(/^\/s\/([A-Za-z0-9_-]+)\/?$/);
+const TOKEN = m ? m[1] : "";
+const P = new URLSearchParams(location.search).get("p") || "";
+if (!TOKEN) { showGone(); }
+
+function showGone(msg){
+  $("goneMsg").textContent = msg || "Возможно, доступ к файлу закрыт или файл удалён.";
+  $("gone").classList.remove("hidden");
+}
+function apiUrl(rel){
+  return "/api/s/" + TOKEN + "/file?p=" + encodeURIComponent(rel);
+}
+function dlUrl(rel){
+  return "/api/s/" + TOKEN + "/download?p=" + encodeURIComponent(rel);
+}
+function openUrl(p){
+  return "/s/" + TOKEN + "?p=" + encodeURIComponent(p);
+}
+function fmtSize(n){
+  if (n == null) return "";
+  if (n < 1024) return n + " Б";
+  const u = ["КБ","МБ","ГБ","ТБ"]; let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return n.toFixed(n < 10 ? 1 : 0) + " " + u[i];
+}
+function fmtDate(ts){
+  const d = new Date(ts * 1000), p = x => String(x).padStart(2, "0");
+  return `${p(d.getDate())}.${p(d.getMonth()+1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function iconOf(name, isDir){
+  if (isDir) return "📁";
+  const e = (name.split(".").pop() || "").toLowerCase();
+  if (["png","jpg","jpeg","gif","webp","svg","bmp","heic"].includes(e)) return "🖼";
+  if (["mp4","mkv","avi","mov","webm","m4v"].includes(e)) return "🎬";
+  if (["mp3","wav","flac","ogg","m4a","aac"].includes(e)) return "🎵";
+  if (e === "pdf") return "📕";
+  if (["zip","rar","7z","tar","gz","bz2","xz"].includes(e)) return "🗜";
+  return "📄";
+}
+
+function renderCrumbs(rootName, p){
+  const box = $("crumbs");
+  box.textContent = "";
+  const add = (label, href, isLast) => {
+    if (href && !isLast) {
+      const a = document.createElement("a");
+      a.textContent = label; a.href = href;
+      box.appendChild(a);
+      box.appendChild(Object.assign(document.createElement("span"), { className: "sep", textContent: "›" }));
+    } else {
+      box.appendChild(Object.assign(document.createElement("span"), { textContent: label }));
+    }
+  };
+  const parts = p ? p.split("/") : [];
+  let acc = "";
+  add(rootName, "/s/" + TOKEN, !parts.length);
+  for (let i = 0; i < parts.length; i++) {
+    acc = acc ? acc + "/" + parts[i] : parts[i];
+    let label = parts[i];
+    try { label = decodeURIComponent(parts[i]); } catch (e) {}
+    add(label, openUrl(acc), i === parts.length - 1);
+  }
+}
+
+function render(items, rootName){
+  renderCrumbs(rootName, P);
+  const rows = $("rows");
+  rows.textContent = "";
+  const empty = $("empty"), tbl = $("tbl");
+  if (!items.length) {
+    tbl.classList.add("hidden");
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  tbl.classList.remove("hidden");
+  for (const it of items) {
+    const tr = document.createElement("tr");
+
+    const tdName = document.createElement("td");
+    const a = document.createElement("a");
+    a.className = "nm";
+    a.appendChild(Object.assign(document.createElement("span"), { className: "ic", textContent: iconOf(it.name, it.type === "dir") }));
+    a.appendChild(Object.assign(document.createElement("span"), { textContent: it.name }));
+    if (it.type === "dir") a.href = openUrl(it.rel);
+    else { a.href = apiUrl(it.rel); a.target = "_blank"; a.rel = "noopener"; }
+    tdName.appendChild(a);
+    tr.appendChild(tdName);
+
+    const tdSize = document.createElement("td");
+    tdSize.className = "num";
+    tdSize.textContent = it.type === "dir" ? "" : fmtSize(it.size);
+    tr.appendChild(tdSize);
+
+    const tdM = document.createElement("td");
+    tdM.className = "num";
+    tdM.textContent = it.mtime ? fmtDate(it.mtime) : "";
+    tr.appendChild(tdM);
+
+    const tdA = document.createElement("td");
+    const acts = document.createElement("div");
+    acts.className = "acts";
+    const b = document.createElement("a");
+    b.textContent = "⬇";
+    b.title = it.type === "dir" ? "Скачать папку zip-архивом" : "Скачать файл";
+    b.href = dlUrl(it.rel);
+    acts.appendChild(b);
+    tdA.appendChild(acts);
+    tr.appendChild(tdA);
+    rows.appendChild(tr);
+  }
+}
+
+async function load(){
+  if (!TOKEN) return;
+  try {
+    const r = await fetch("/api/s/" + TOKEN + "/list?p=" + encodeURIComponent(P));
+    if (!r.ok) {
+      let msg = null;
+      try { msg = (await r.json()).error; } catch (e) {}
+      showGone(msg);
+      return;
+    }
+    const data = await r.json();
+    $("app").classList.remove("hidden");
+    $("btnZip").onclick = () => location.href = dlUrl(P);
+    render(data.items, data.name);
+  } catch (e) { showGone(); }
+}
+
+load();
+</script>
+</body>
+</html>

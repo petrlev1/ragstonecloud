@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from app import auth, config as cfg_mod, indexer, storage
+from app import auth, config as cfg_mod, indexer, shares, storage
 
 cfg = cfg_mod.load()
 storage.ROOT = cfg["root"]
@@ -25,12 +25,15 @@ PW = cfg["password"]
 SESSION_DAYS = int(cfg.get("session_days", 30))
 HIDE_DOT = bool(cfg.get("hide_dot", True))
 INDEX = os.path.join(cfg_mod.BASE, "static", "index.html")
+SHARE_INDEX = os.path.join(cfg_mod.BASE, "static", "share.html")
 LOGIN_COOKIE = "cl_session"
 # лог неудачных входов для fail2ban (реальный IP клиента)
 AUTH_LOG = os.path.join(cfg_mod.BASE, "auth_failures.log")
 
 # полнотекстовый индекс (PostgreSQL): схема + фоновая синхронизация при старте
 indexer.init(cfg)
+# публичные ссылки (PostgreSQL): схема shares
+shares.init(cfg)
 
 app = FastAPI(title="Облако", docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=os.path.join(cfg_mod.BASE, "static")), name="static")
@@ -161,6 +164,32 @@ def api_file(path: str, _=Depends(require_auth)):
                         content_disposition_type="inline")
 
 
+def _zip_dir(abs_dir: str):
+    """Папка -> временный zip. Возвращает (zpath, filename_zip, cleanup_fn)."""
+    tmp = tempfile.mkdtemp(prefix="cloud_zip_")
+    base = os.path.basename(abs_dir.rstrip(os.sep)) or "cloud"
+    zpath = shutil.make_archive(os.path.join(tmp, base), "zip",
+                                root_dir=os.path.dirname(abs_dir),
+                                base_dir=os.path.basename(abs_dir))
+
+    def _cleanup():
+        try:
+            os.remove(zpath)
+            os.rmdir(tmp)
+        except OSError:
+            pass
+
+    return zpath, f"{base}.zip", _cleanup
+
+
+def _shares_hook(fn, *args):
+    """Хуки shares (переименование/удаление) не должны ронять запрос."""
+    try:
+        fn(*args)
+    except Exception as e:
+        print("shares hook:", type(e).__name__, e, flush=True)
+
+
 @app.get("/api/download")
 def api_download(path: str, _=Depends(require_auth)):
     p = storage.safe(path)
@@ -169,22 +198,10 @@ def api_download(path: str, _=Depends(require_auth)):
         return FileResponse(p, media_type=media, filename=os.path.basename(p),
                             content_disposition_type="attachment")
     if os.path.isdir(p):
-        tmp = tempfile.mkdtemp(prefix="cloud_zip_")
-        base = os.path.basename(p.rstrip(os.sep)) or "cloud"
-        zpath = shutil.make_archive(os.path.join(tmp, base), "zip",
-                                    root_dir=os.path.dirname(p),
-                                    base_dir=os.path.basename(p))
-
-        def _cleanup():
-            try:
-                os.remove(zpath)
-                os.rmdir(tmp)
-            except OSError:
-                pass
-
-        return FileResponse(zpath, media_type="application/zip", filename=f"{base}.zip",
+        zpath, zname, cleanup = _zip_dir(p)
+        return FileResponse(zpath, media_type="application/zip", filename=zname,
                             content_disposition_type="attachment",
-                            background=BackgroundTask(_cleanup))
+                            background=BackgroundTask(cleanup))
     raise HTTPException(404, "Не найдено")
 
 
@@ -238,6 +255,7 @@ def api_rename(body: RenameBody, _=Depends(require_auth)):
     old_rel = storage.rel_of(src)
     os.rename(src, dst)
     indexer.rename_path(old_rel, storage.rel_of(dst))
+    _shares_hook(shares.rename_path, old_rel, storage.rel_of(dst))
     return {"ok": True}
 
 
@@ -258,6 +276,7 @@ def api_move(body: MoveBody, _=Depends(require_auth)):
     old_rel = storage.rel_of(src)
     shutil.move(src, dst)
     indexer.rename_path(old_rel, storage.rel_of(dst))
+    _shares_hook(shares.rename_path, old_rel, storage.rel_of(dst))
     return {"ok": True}
 
 
@@ -273,6 +292,7 @@ def api_delete(body: PathBody, _=Depends(require_auth)):
     else:
         raise HTTPException(404, "Не найдено")
     indexer.delete_path(storage.rel_of(p))
+    _shares_hook(shares.delete_path, storage.rel_of(p))
     return {"ok": True}
 
 
@@ -322,3 +342,149 @@ def api_index(_=Depends(require_auth)):
 def api_index_sync(_=Depends(require_auth)):
     started = indexer.sync_start()
     return {"ok": True, "started": started}
+
+
+# ---------- общие ссылки: управление (владелец) ----------
+
+class ShareBody(BaseModel):
+    path: str
+
+
+class RevokeBody(BaseModel):
+    token: str
+
+
+@app.get("/api/share")
+def api_share_by_path(path: str = "", _=Depends(require_auth)):
+    """Ссылки на конкретный объект (для диалога у строки)."""
+    links = shares.list_by_rel(path)
+    return {"links": [dict(l, url="/s/" + l["token"]) for l in links]}
+
+
+@app.post("/api/share")
+def api_share_create(body: ShareBody, _=Depends(require_auth)):
+    p = storage.safe(body.path)
+    if not os.path.exists(p):
+        raise HTTPException(404, "Не найдено")
+    rec = shares.create(storage.rel_of(p))
+    return {"ok": True, **rec, "url": "/s/" + rec["token"]}
+
+
+@app.post("/api/share/revoke")
+def api_share_revoke(body: RevokeBody, _=Depends(require_auth)):
+    removed = shares.remove(body.token)
+    return {"ok": True, "removed": removed}
+
+
+@app.get("/api/shares")
+def api_shares_all(_=Depends(require_auth)):
+    """Все активные ссылки (+ тип/размер/время объекта, если он жив)."""
+    out = []
+    for r in shares.all_():
+        item = {"token": r["token"], "rel": r["rel"],
+                "created": r["created"], "url": "/s/" + r["token"]}
+        try:
+            p = storage.safe(r["rel"])
+            if os.path.isdir(p):
+                st = os.stat(p)
+                item.update(type="dir", name=os.path.basename(p.rstrip(os.sep)) or "Облако",
+                            size=None, mtime=int(st.st_mtime))
+            elif os.path.isfile(p):
+                st = os.stat(p)
+                item.update(type="file", name=os.path.basename(p),
+                            size=st.st_size, mtime=int(st.st_mtime))
+            else:
+                item["type"] = "missing"
+        except Exception:
+            item["type"] = "missing"
+        out.append(item)
+    return {"shares": out}
+
+
+# ---------- общие ссылки: публичный просмотр (без авторизации) ----------
+
+def _guest(token: str, p: str):
+    """(abs_share, abs_target, p_norm): корень шары и запрошенная цель внутри неё.
+    404 — ссылки нет; 403 — попытка выйти за пределы шары."""
+    rel = shares.rel_of(token)          # 404, если ссылка отозвана
+    share = storage.safe(rel)           # внутри хранилища (реальный путь)
+    if not os.path.lexists(share):
+        raise HTTPException(404, "Ссылка недействительна или удалена")
+    if not os.path.isdir(share):
+        # расшарен файл — вложенных путей у него нет
+        if (p or "").strip("/"):
+            raise HTTPException(403, "У файла нет вложенных путей")
+        return share, share, ""
+    pn = (p or "").strip("/")
+    if not pn:
+        return share, share, ""
+    target = os.path.realpath(os.path.join(share, *pn.split("/")))
+    if target != share and not target.startswith(share.rstrip(os.sep) + os.sep):
+        raise HTTPException(403, "Вне области общего доступа")
+    return share, target, pn
+
+
+@app.get("/s/{token}")
+def s_share_page(token: str):
+    """Ссылка: файл открывается сразу (inline), папка — страница просмотра."""
+    share, _, _ = _guest(token, "")
+    if os.path.isfile(share):
+        media = mimetypes.guess_type(share)[0] or "application/octet-stream"
+        return FileResponse(share, media_type=media,
+                            filename=os.path.basename(share),
+                            content_disposition_type="inline")
+    return FileResponse(SHARE_INDEX, media_type="text/html")
+
+
+@app.get("/api/s/{token}/list")
+def s_share_list(token: str, p: str = ""):
+    """Содержимое папки внутри шары. Пути элементов — относительно шары."""
+    share, target, pn = _guest(token, p)
+    if not os.path.isdir(target):
+        raise HTTPException(404, "Папка не найдена")
+    share_rel = shares.rel_of(token)
+    if not share_rel:
+        share_rel = ""  # расшарен корень
+    out = []
+    for it in storage.list_dir(target, hide_dot=HIDE_DOT):
+        try:
+            a = storage.safe(it["rel"])  # реальный путь (внутри хранилища)
+        except HTTPException:
+            continue
+        if a != share and not a.startswith(share.rstrip(os.sep) + os.sep):
+            continue  # symlink наружу области доступа — гостю не показываем
+        nrel = it["rel"].replace("\\", "/")
+        g = nrel[len(share_rel) + 1:] if share_rel else nrel
+        out.append({"name": it["name"], "type": it["type"],
+                    "size": it["size"], "mtime": it["mtime"], "rel": g})
+    name = os.path.basename(share.rstrip(os.sep)) or "Облако"
+    return {"name": name, "path": pn, "items": out}
+
+
+@app.get("/api/s/{token}/file")
+def s_share_file(token: str, p: str = ""):
+    """Просмотр файла внутри шары (inline)."""
+    _, target, _ = _guest(token, p)
+    if not os.path.isfile(target):
+        raise HTTPException(404, "Файл не найден")
+    media = mimetypes.guess_type(target)[0] or "application/octet-stream"
+    return FileResponse(target, media_type=media,
+                        filename=os.path.basename(target),
+                        content_disposition_type="inline")
+
+
+@app.get("/api/s/{token}/download")
+def s_share_download(token: str, p: str = ""):
+    """Скачивание: файл как есть, папка — zip-архивом."""
+    _, target, _ = _guest(token, p)
+    if os.path.isfile(target):
+        media = mimetypes.guess_type(target)[0] or "application/octet-stream"
+        return FileResponse(target, media_type=media,
+                            filename=os.path.basename(target),
+                            content_disposition_type="attachment")
+    if os.path.isdir(target):
+        zpath, zname, cleanup = _zip_dir(target)
+        return FileResponse(zpath, media_type="application/zip", filename=zname,
+                            content_disposition_type="attachment",
+                            background=BackgroundTask(cleanup))
+    raise HTTPException(404, "Не найдено")

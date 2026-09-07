@@ -56,6 +56,19 @@
   dialog h3{margin:0 0 12px;font-size:15px;word-break:break-word}
   dialog input{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font:inherit}
   .dlg-btns{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+  /* диалог общих ссылок */
+  #dlgShare>div{padding:16px;max-width:560px}
+  #dlgShare h3{margin:0 0 4px}
+  #dlgShare .note{color:var(--muted);font-size:12px;margin:0 0 10px}
+  #shareLinks{max-height:50vh;overflow:auto}
+  .slink{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #eceff2;flex-wrap:wrap}
+  .slink:first-child{border-top:none}
+  .slink .url{flex:1;min-width:160px;font:12px ui-monospace,Consolas,"Courier New",monospace;overflow-wrap:anywhere}
+  .slink a,.slink button{font-size:12px;padding:3px 8px;text-decoration:none;line-height:1.5}
+  .slink a{color:var(--text);border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer}
+  .slink a:hover{background:#f0f2f5}
+  .no-links{color:var(--muted);font-size:13px;padding:6px 0}
+  .mini{color:var(--muted);font-size:11px}
 
 /* ---- мобильная версия: строки-карточки, без горизонтального скролла ---- */
 @media (max-width:640px){
@@ -107,13 +120,14 @@
     <button id="btnIndex" title="Обновить индекс поиска">⟳ Индекс</button>
     <button id="btnUpload" title="Загрузить файлы в текущую папку">⬆ Загрузить</button>
     <button id="btnFolder">＋ Папка</button>
+    <button id="btnShares" title="Все общие ссылки">🔗 Ссылки</button>
     <button id="btnLogout">Выход</button>
   </header>
   <main>
     <div id="note" class="note hidden"></div>
     <div id="empty" class="empty hidden"></div>
     <table id="tbl" class="hidden">
-      <thead><tr><th>Имя</th><th class="num">Размер</th><th class="num">Изменён</th><th style="width:250px"></th></tr></thead>
+      <thead><tr><th>Имя</th><th class="num">Размер</th><th class="num" id="thDate">Изменён</th><th style="width:330px"></th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </main>
@@ -131,13 +145,25 @@
   </form>
 </dialog>
 
+<dialog id="dlgShare">
+  <div>
+    <h3 id="dlgShareTitle"></h3>
+    <p class="note" id="dlgShareNote"></p>
+    <div id="shareLinks"></div>
+    <div class="dlg-btns">
+      <button type="button" id="dlgShareAdd" class="primary">＋ Новая ссылка</button>
+      <button type="button" id="dlgShareClose">Закрыть</button>
+    </div>
+  </div>
+</dialog>
+
 <div id="prog"><div class="bar" id="progBar"></div></div>
 <div id="toast"></div>
 
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-const S = { cur: "", search: null, busy: false };
+const S = { cur: "", search: null, busy: false, view: "browse" };
 
 /* ---------- утилиты ---------- */
 function fmtSize(n){
@@ -171,6 +197,21 @@ function toast(msg, isErr){
   t._h = setTimeout(() => t.style.opacity = 0, 3500);
 }
 function setNote(text){ $("note").textContent = text || ""; $("note").classList.toggle("hidden", !text); }
+function copyText(t){
+  const done = () => toast("Ссылка скопирована");
+  const fallback = () => {
+    const ta = document.createElement("textarea");
+    ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); toast("Ссылка скопирована"); }
+    catch (e) { prompt("Скопируй ссылку вручную (Ctrl+C):", t); }
+    ta.remove();
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(t).then(done, fallback);
+  else fallback();
+}
+function fullUrl(path){ return location.origin + path; }
 
 /* ---------- api ---------- */
 async function api(url, opts = {}){
@@ -205,6 +246,16 @@ function ask(title, placeholder, value = ""){
 function renderCrumbs(){
   const box = $("crumbs");
   box.textContent = "";
+  if (S.view === "shares") {
+    const a = document.createElement("a");
+    a.textContent = "☁️ Облако";
+    a.href = "#";
+    a.onclick = e => { e.preventDefault(); loadDir(""); };
+    box.appendChild(a);
+    box.appendChild(Object.assign(document.createElement("span"), { className: "sep", textContent: "›" }));
+    box.appendChild(Object.assign(document.createElement("span"), { textContent: "🔗 Ссылки" }));
+    return;
+  }
   if (S.search) {
     const a = document.createElement("a");
     a.textContent = "✕ Поиск: «" + S.search.q + "»";
@@ -274,6 +325,8 @@ function makeRow(item, inSearch){
   exp.title = "Показать в проводнике Windows (диск Z:)";
   exp.href = "cloudopen:" + item.rel.split("/").map(encodeURIComponent).join("/");
   acts.appendChild(exp);
+  const sh = btn("🔗", null, () => shareDialog(item));
+  sh.title = "Общая ссылка — просмотр без входа";
   btn("⬇", null, () => location.href = "/api/download?path=" + encodeURIComponent(item.rel));
   btn("Переим.", null, rename);
   btn("Перенести", null, move);
@@ -323,7 +376,10 @@ function render(items){
 }
 
 async function loadDir(path){
-  S.cur = path || ""; S.search = null; $("q").value = "";
+  S.cur = path || ""; S.search = null; S.view = "browse"; $("q").value = "";
+  headerBrowse(true);
+  $("thDate").textContent = "Изменён";
+  setNote("");
   S.busy = true;
   try {
     const data = await api("/api/list?path=" + encodeURIComponent(path || ""));
@@ -347,6 +403,7 @@ async function runSearch(){
   finally { clearInterval(timer); S.busy = false; }
 }
 function refresh(){
+  if (S.view === "shares") { loadShares(); return; }
   if (S.search) { $("q").value = S.search.q; runSearch(); }
   else loadDir(S.cur);
 }
@@ -374,6 +431,183 @@ function uploadFiles(list){
   };
   xhr.onerror = () => { bar.style.width = "0%"; toast("Ошибка сети", true); };
   xhr.send(fd);
+}
+
+/* ---------- общие ссылки ---------- */
+function headerBrowse(on){
+  $("q").classList.toggle("hidden", !on);
+  $("btnIndex").classList.toggle("hidden", !on);
+  $("btnUpload").classList.toggle("hidden", !on);
+  $("btnFolder").classList.toggle("hidden", !on);
+}
+
+async function loadShares(){
+  S.view = "shares"; S.search = null; S.cur = "";
+  $("q").value = "";
+  headerBrowse(false);
+  setNote("");
+  $("thDate").textContent = "Создана";
+  $("tbl").classList.add("hidden");
+  $("empty").classList.remove("hidden");
+  $("empty").textContent = "Загружаю ссылки…";
+  S.busy = true;
+  try {
+    const data = await api("/api/shares");
+    drawShares(data.shares);
+  } catch (e) { if (e.message !== "Требуется вход") toast(e.message, true); }
+  finally { S.busy = false; }
+}
+
+function drawShares(list){
+  renderCrumbs();
+  const rows = $("rows");
+  rows.textContent = "";
+  const empty = $("empty"), tbl = $("tbl");
+  if (!list.length) {
+    tbl.classList.add("hidden");
+    empty.classList.remove("hidden");
+    empty.textContent = "Нет ни одной ссылки — нажми 🔗 у файла или папки";
+    return;
+  }
+  empty.classList.add("hidden");
+  tbl.classList.remove("hidden");
+  for (const s of list) {
+    const tr = document.createElement("tr");
+
+    const tdName = document.createElement("td");
+    const gone = s.type === "missing";
+    const a = document.createElement("a");
+    a.className = "nm";
+    const ic = document.createElement("span"); ic.className = "ic";
+    ic.textContent = gone ? "❓" : iconOf(s.name, s.type === "dir");
+    const tx = document.createElement("span");
+    tx.textContent = gone ? (s.rel.split("/").pop() || s.rel) + " (удалён)" : s.name;
+    a.appendChild(ic); a.appendChild(tx);
+    if (s.rel && !gone) {
+      a.href = "#";
+      a.title = "Перейти к папке, где лежит объект";
+      a.onclick = e => {
+        e.preventDefault();
+        const parent = s.rel.split("/").slice(0, -1).join("/");
+        loadDir(parent);
+      };
+    }
+    tdName.appendChild(a);
+    if (s.rel) {
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = "…/" + s.rel;
+      tdName.appendChild(sub);
+    }
+    tr.appendChild(tdName);
+
+    const tdSize = document.createElement("td");
+    tdSize.className = "num";
+    tdSize.textContent = gone || s.type === "dir" ? "" : fmtSize(s.size);
+    tr.appendChild(tdSize);
+
+    const tdM = document.createElement("td");
+    tdM.className = "num";
+    tdM.textContent = s.created ? fmtDate(s.created) : "";
+    tr.appendChild(tdM);
+
+    const tdA = document.createElement("td");
+    const acts = document.createElement("div"); acts.className = "acts";
+    const b = (label, cls, fn) => {
+      const x = document.createElement("button");
+      x.textContent = label;
+      if (cls) x.className = cls;
+      x.onclick = e => { e.stopPropagation(); fn(); };
+      acts.appendChild(x);
+      return x;
+    };
+    b("Копировать", null, () => copyText(fullUrl(s.url)));
+    if (!gone) {
+      const o = document.createElement("a");
+      o.textContent = "Открыть";
+      o.href = s.url; o.target = "_blank"; o.rel = "noopener";
+      o.title = "Открыть как гость (в новой вкладке)";
+      acts.appendChild(o);
+    }
+    b("Закрыть", "del", () => revokeShare(s, tr));
+    tdA.appendChild(acts);
+    tr.appendChild(tdA);
+    rows.appendChild(tr);
+  }
+}
+
+async function revokeShare(s, tr){
+  if (!confirm("Закрыть доступ по ссылке на «" + (s.name || s.rel) + "»?")) return;
+  try {
+    await post("/api/share/revoke", { token: s.token });
+    toast("Доступ закрыт");
+    loadShares();
+  } catch (e) { toast(e.message, true); }
+}
+
+function shareDialog(item){
+  const d = $("dlgShare");
+  $("dlgShareTitle").textContent = "«" + item.name + "»";
+  $("dlgShareNote").textContent = item.type === "dir"
+    ? "Доступ по ссылке, без входа. Видны все вложенные файлы и папки; ссылка переживает переименование и перенос."
+    : "Файл открывается у любого, у кого есть ссылка (без входа).";
+  $("dlgShareAdd").onclick = async () => {
+    try {
+      await post("/api/share", { path: item.rel });
+      toast("Ссылка создана");
+    } catch (e) { toast(e.message, true); }
+    loadLinks(item);
+  };
+  $("dlgShareClose").onclick = () => d.close();
+  d.showModal();
+  loadLinks(item);
+}
+
+async function loadLinks(item){
+  const box = $("shareLinks");
+  try {
+    const data = await api("/api/share?path=" + encodeURIComponent(item.rel));
+    box.textContent = "";
+    if (!data.links.length) {
+      box.appendChild(Object.assign(document.createElement("div"),
+        { className: "no-links", textContent: "Ссылок пока нет." }));
+      return;
+    }
+    for (const l of data.links) {
+      const div = document.createElement("div");
+      div.className = "slink";
+      const urlEl = document.createElement("div");
+      urlEl.className = "url";
+      urlEl.textContent = fullUrl(l.url);
+      div.appendChild(urlEl);
+      const bCopy = document.createElement("button");
+      bCopy.textContent = "Копировать";
+      bCopy.onclick = () => copyText(urlEl.textContent);
+      div.appendChild(bCopy);
+      const aOpen = document.createElement("a");
+      aOpen.textContent = "Открыть";
+      aOpen.href = l.url; aOpen.target = "_blank"; aOpen.rel = "noopener";
+      aOpen.title = "Открыть как гость";
+      div.appendChild(aOpen);
+      const bDel = document.createElement("button");
+      bDel.textContent = "Закрыть доступ";
+      bDel.className = "del";
+      bDel.onclick = async () => {
+        if (!confirm("Закрыть доступ по этой ссылке?")) return;
+        try {
+          await post("/api/share/revoke", { token: l.token });
+          toast("Доступ закрыт");
+          loadLinks(item);
+        } catch (e) { toast(e.message, true); }
+      };
+      div.appendChild(bDel);
+      box.appendChild(div);
+    }
+  } catch (e) {
+    box.textContent = "";
+    box.appendChild(Object.assign(document.createElement("div"),
+      { className: "no-links", textContent: "Не удалось загрузить ссылки: " + e.message }));
+  }
 }
 
 /* ---------- вход/выход ---------- */
@@ -412,6 +646,11 @@ $("fileInput").onchange = () => { uploadFiles($("fileInput").files); $("fileInpu
 $("btnFolder").onclick = async () => {
   const name = await ask("Новая папка в «" + (S.cur || "Облако") + "»", "имя папки");
   if (name) post("/api/folder", { path: S.cur, name }).then(refresh).catch(e => toast(e.message, true));
+};
+$("btnShares").onclick = () => {
+  if (S.busy) return;
+  if (S.view === "shares") loadDir("");
+  else loadShares();
 };
 // индекс: кнопка обновления + ожидание завершения
 $("btnIndex").onclick = async () => {
