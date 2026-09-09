@@ -19,6 +19,7 @@
   .crumbs a:hover{background:#e8f0fe}
   .crumbs .sep{color:var(--muted)}
   #q{min-width:180px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font:inherit}
+  select{padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:#fff;font:inherit;color:var(--text);max-width:190px}
   button{font:inherit;padding:6px 12px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer}
   button:hover{background:#f0f2f5}
   button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -115,6 +116,7 @@
 <div id="app" class="hidden">
   <header>
     <div class="brand">☁️ Облако</div>
+    <select id="diskSel" title="Диск"></select>
     <div class="crumbs" id="crumbs"></div>
     <input id="q" placeholder="Поиск по имени и содержимому…" autocomplete="off">
     <button id="btnIndex" title="Обновить индекс поиска">⟳ Индекс</button>
@@ -164,6 +166,25 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const S = { cur: "", search: null, busy: false, view: "browse" };
+/* «диски» — виртуальные корни внутри единого хранилища (root config.json).
+   Корень = "" (Сервер Митино); смонтированный «второй диск» — dot-папка .cheba,
+   имя должно совпадать с config.json "index_dots" на сервере. */
+const DISKS = [
+  { rel: "", name: "Сервер Митино" },
+  { rel: ".cheba", name: "Сервер Чеба" },
+];
+function diskOf(rel){
+  rel = rel || "";
+  for (const d of DISKS)
+    if (rel === d.rel || (d.rel && rel.startsWith(d.rel + "/"))) return d;
+  return DISKS[0];
+}
+function humanRel(rel){
+  const d = diskOf(rel);
+  if (!d.rel) return rel;
+  const rest = rel.length > d.rel.length ? rel.slice(d.rel.length + 1) : "";
+  return d.name + (rest ? " › " + rest : "");
+}
 
 /* ---------- утилиты ---------- */
 function fmtSize(n){
@@ -273,8 +294,12 @@ function renderCrumbs(){
     box.appendChild(a);
     if (path !== S.cur) box.appendChild(Object.assign(document.createElement("span"), { className: "sep", textContent: "›" }));
   };
-  add("Облако", "");
-  for (const p of parts) { acc = acc ? acc + "/" + p : p; add(p, acc); }
+  const disk = diskOf(S.cur), base = disk.rel;
+  $("diskSel").value = base;
+  const rest = base ? (S.cur === base ? [] : S.cur.slice(base.length + 1).split("/")) : parts;
+  add(disk.name, base);
+  acc = base;
+  for (const p of rest) { acc = acc ? acc + "/" + p : p; add(p, acc); }
 }
 
 function makeRow(item, inSearch){
@@ -297,7 +322,7 @@ function makeRow(item, inSearch){
   tdName.appendChild(a);
   if (inSearch) {
     const sub = document.createElement("div");
-    sub.className = "sub"; sub.textContent = "…/" + item.rel;
+    sub.className = "sub"; sub.textContent = "…/" + humanRel(item.rel);
     tdName.appendChild(sub);
   }
   tr.appendChild(tdName);
@@ -441,6 +466,21 @@ function headerBrowse(on){
   $("btnFolder").classList.toggle("hidden", !on);
 }
 
+/* селектор диска в шапке: строим опции один раз, смена = вход в корень диска */
+function buildDiskSel(){
+  const sel = $("diskSel");
+  sel.textContent = "";
+  for (const d of DISKS){
+    const o = document.createElement("option");
+    o.value = d.rel; o.textContent = d.name;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => {
+    if (S.busy){ sel.value = diskOf(S.cur).rel; return; }
+    loadDir(sel.value);
+  };
+}
+
 async function loadShares(){
   S.view = "shares"; S.search = null; S.cur = "";
   $("q").value = "";
@@ -496,7 +536,7 @@ function drawShares(list){
     if (s.rel) {
       const sub = document.createElement("div");
       sub.className = "sub";
-      sub.textContent = "…/" + s.rel;
+      sub.textContent = "…/" + humanRel(s.rel);
       tdName.appendChild(sub);
     }
     tr.appendChild(tdName);
@@ -677,6 +717,7 @@ window.addEventListener("drop", e => {
   uploadFiles(e.dataTransfer.files);
 });
 
+buildDiskSel();
 init();
 </script>
 </body>
