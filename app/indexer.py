@@ -266,16 +266,17 @@ def _sync_run():
         log(f"sync: обход диска, root={ROOT}")
         # 1) обход диска: rel -> (mtime, size)
         disk: dict[str, tuple[int, int]] = {}
-        failed_tops: set[str] = set()  # вершины, чей обход упал (напр. отвал .cheba)
+        failed: set[str] = set()  # rel-пути поддеревьев, чей обход упал
 
         def _on_walk_error(e):
             log(f"sync: ошибка обхода: {e}")
-            # вершина = первый сегмент пути от ROOT, который не удалось обойти
+            # полный rel упавшей папки: при отвале маунта (.cheba) это сам маунт,
+            # при нечитаемой папке (data/lost+found) — именно она, а не весь top-сегмент
             try:
                 p = os.path.relpath(getattr(e, "filename", "") or "", ROOT)
             except ValueError:
                 p = "?"
-            failed_tops.add("*" if p in ("", ".") else p.split("/", 1)[0])
+            failed.add("*" if p in ("", ".") else p)
 
         for root, dirs, files in os.walk(ROOT, onerror=_on_walk_error):
             dirs[:] = [d for d in dirs if not _is_skipped_dir(d)]
@@ -309,13 +310,12 @@ def _sync_run():
                 "SELECT path, mtime, size FROM files").fetchall()
             db_state = {p: (m, s) for p, m, s in db_rows}
 
-            # если поддерево не удалось обойти (сеть/маунт) — его строки НЕ удаляем,
-            # иначе отвал «второго диска» вычистил бы весь его индекс
-            def _top_of(p: str) -> str:
-                return p.split("/", 1)[0]
+            # если поддерево не удалось обойти (сеть/маунт, нечитаемая папка) —
+            # строки ПОД НИМ не удаляем: отвал «второго диска» не должен вычистить его индекс
+            def _under_failed(p: str) -> bool:
+                return any(f == "*" or p == f or p.startswith(f + "/") for f in failed)
 
-            to_delete = [p for p in db_state if p not in disk
-                         and _top_of(p) not in failed_tops and "*" not in failed_tops]
+            to_delete = [p for p in db_state if p not in disk and not _under_failed(p)]
             to_upsert = [p for p, ms in disk.items() if db_state.get(p) != ms]
             log(f"sync: новых/изменённых {len(to_upsert)}, удалённых {len(to_delete)}")
 
