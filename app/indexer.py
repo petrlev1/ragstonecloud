@@ -26,6 +26,9 @@ DOCX_EXTS = {".docx"}
 XLSX_EXTS = {".xlsx", ".xlsm"}   # openpyxl
 XLS_EXTS = {".xls"}              # xlrd (старый бинарный Excel)
 SKIP_DIRS = {"venv", "node_modules", "__pycache__", ".git"}
+# dot-имена, которые индексируем НЕСМОТРЯ на ведущую точку (config.json "index_dots"):
+# напр. монтированный «второй диск» .cheba. Задаётся из config.json при init().
+INDEX_DOTS: set[str] = set()
 MAX_FILE = 50 * 1024 * 1024   # файлы больше не индексируем (как rg --max-filesize)
 MAX_TEXT = 2_000_000          # потолок извлекаемого текста на файл (символов)
 
@@ -52,9 +55,10 @@ def _connect(autocommit=False):
 
 def init(cfg: dict):
     """Вызывается при старте приложения."""
-    global DB, ROOT, ENABLED
+    global DB, ROOT, ENABLED, INDEX_DOTS
     DB = cfg.get("db")
     ROOT = cfg["root"]
+    INDEX_DOTS = set(cfg.get("index_dots") or [])
     if not DB:
         log("БД не настроена — индекс выключен")
         return
@@ -146,7 +150,7 @@ def extract_text(abs_path: str) -> str | None:
 
 
 def _is_skipped_dir(name: str) -> bool:
-    return name.startswith(".") or name in SKIP_DIRS
+    return (name.startswith(".") and name not in INDEX_DOTS) or name in SKIP_DIRS
 
 
 # ---------- точечные операции (вызываются из API при изменениях) ----------
@@ -262,9 +266,16 @@ def _sync_run():
         log(f"sync: обход диска, root={ROOT}")
         # 1) обход диска: rel -> (mtime, size)
         disk: dict[str, tuple[int, int]] = {}
+        failed_tops: set[str] = set()  # вершины, чей обход упал (напр. отвал .cheba)
 
         def _on_walk_error(e):
             log(f"sync: ошибка обхода: {e}")
+            # вершина = первый сегмент пути от ROOT, который не удалось обойти
+            try:
+                p = os.path.relpath(getattr(e, "filename", "") or "", ROOT)
+            except ValueError:
+                p = "?"
+            failed_tops.add("*" if p in ("", ".") else p.split("/", 1)[0])
 
         for root, dirs, files in os.walk(ROOT, onerror=_on_walk_error):
             dirs[:] = [d for d in dirs if not _is_skipped_dir(d)]
@@ -298,7 +309,13 @@ def _sync_run():
                 "SELECT path, mtime, size FROM files").fetchall()
             db_state = {p: (m, s) for p, m, s in db_rows}
 
-            to_delete = [p for p in db_state if p not in disk]
+            # если поддерево не удалось обойти (сеть/маунт) — его строки НЕ удаляем,
+            # иначе отвал «второго диска» вычистил бы весь его индекс
+            def _top_of(p: str) -> str:
+                return p.split("/", 1)[0]
+
+            to_delete = [p for p in db_state if p not in disk
+                         and _top_of(p) not in failed_tops and "*" not in failed_tops]
             to_upsert = [p for p, ms in disk.items() if db_state.get(p) != ms]
             log(f"sync: новых/изменённых {len(to_upsert)}, удалённых {len(to_delete)}")
 
