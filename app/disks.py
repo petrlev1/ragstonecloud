@@ -8,6 +8,7 @@ config.json:  "disks": [{"rel": "", "name": "Сервер Митино"}, ...]
          из /sys/block/<dev>/queue/rotational автоматически.
 """
 import os
+import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -66,20 +67,25 @@ def _device_type(abs_path: str) -> str | None:
     src = _run("findmnt", "-no", "SOURCE", "--target", abs_path)
     if not src or not src.startswith("/dev/"):
         return None
-    dev = src
-    for _ in range(4):              # поднимаемся по LVM/разделам до физического диска
-        parent = _run("lsblk", "-no", "PKNAME", dev).splitlines()
-        if not parent or not parent[0].strip():
-            break
-        dev = "/dev/" + parent[0].strip()
-    base = os.path.basename(dev)
+    base = os.path.basename(os.path.realpath(src))     # /dev/mapper/… → dm-0
     try:
         with open(f"/sys/block/{base}/queue/rotational") as f:
             rot = f.read().strip()
     except OSError:
+        rot = _run("lsblk", "-dno", "ROTA", src)       # разделы: /sys/block/<part> нет
+    if rot not in ("0", "1"):
         return None
+    phys = base                                         # dm/md → физический диск через slaves
+    for _ in range(4):
+        try:
+            slaves = os.listdir(f"/sys/block/{phys}/slaves")
+        except OSError:
+            break
+        if not slaves:
+            break
+        phys = re.sub(r"p?\d+$", "", slaves[0])
     if rot == "0":
-        return "NVMe SSD" if base.startswith("nvme") else "SSD"
+        return "NVMe SSD" if phys.startswith("nvme") else "SSD"
     return "HDD"
 
 
