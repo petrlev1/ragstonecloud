@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from app import auth, config as cfg_mod, indexer, shares, storage
+from app import auth, config as cfg_mod, disks, indexer, shares, storage
 
 cfg = cfg_mod.load()
 storage.ROOT = cfg["root"]
@@ -34,6 +34,8 @@ AUTH_LOG = os.path.join(cfg_mod.BASE, "auth_failures.log")
 indexer.init(cfg)
 # публичные ссылки (PostgreSQL): схема shares
 shares.init(cfg)
+# «диски» для шапки UI (config.json "disks"): имена + место/тип носителя
+disks.init(cfg)
 
 app = FastAPI(title="Облако", docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=os.path.join(cfg_mod.BASE, "static")), name="static")
@@ -342,6 +344,11 @@ def api_index(_=Depends(require_auth)):
 def api_index_sync(_=Depends(require_auth)):
     started = indexer.sync_start()
     return {"ok": True, "started": started}
+
+
+@app.get("/api/disks")
+def api_disks(_=Depends(require_auth)):
+    return {"disks": disks.stats()}
 
 
 # ---------- общие ссылки: управление (владелец) ----------
