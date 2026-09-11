@@ -72,6 +72,25 @@
   .no-links{color:var(--muted);font-size:13px;padding:6px 0}
   .mini{color:var(--muted);font-size:11px}
 
+  /* строка состояния удаления: прогресс + отмена */
+  #delBar{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:55;
+          width:min(720px,calc(100vw - 24px));background:#fff;border:1px solid var(--border);
+          border-radius:10px;box-shadow:0 6px 24px rgba(16,22,26,.18);padding:10px 14px}
+  #delBar .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  #delBar .ic{font-size:16px}
+  #delBar .txt{flex:1;min-width:170px;overflow-wrap:anywhere;line-height:1.35}
+  #delBar .mini2{color:var(--muted);font-size:12px}
+  #delBar button{padding:4px 10px;font-size:12px}
+  #delBar button.danger{color:var(--danger)}
+  #delBar .pbar{height:6px;border-radius:3px;background:#eceff2;margin-top:8px;overflow:hidden}
+  #delBar .pbar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
+  #delBar.done .pbar i{background:#1a7f37}
+  #delBar.cancel .pbar i{background:#bf8700}
+  #delBar.err .pbar i{background:var(--danger)}
+  #delBar.scanning .pbar i{animation:delScan 1.3s ease-in-out infinite}
+  @keyframes delScan{0%{margin-left:0}50%{margin-left:65%}100%{margin-left:0}}
+  body.has-delbar #toast{bottom:112px}
+
 /* ---- мобильная версия: строки-карточки, без горизонтального скролла ---- */
 @media (max-width:640px){
   body{font-size:15px}
@@ -161,6 +180,16 @@
     </div>
   </div>
 </dialog>
+
+<div id="delBar" class="hidden">
+  <div class="row">
+    <span class="ic" id="delIcon">⏳</span>
+    <div class="txt"><div id="delTitle"></div><div class="mini2" id="delSub"></div></div>
+    <button id="delCancel" class="danger">Отменить</button>
+    <button id="delClose" class="hidden" title="Скрыть">✕</button>
+  </div>
+  <div class="pbar"><i id="delProg"></i></div>
+</div>
 
 <div id="prog"><div class="bar" id="progBar"></div></div>
 <div id="toast"></div>
@@ -390,7 +419,7 @@ function makeRow(item, inSearch){
     const q = item.type === "dir"
       ? "Удалить папку «" + item.name + "» со всем содержимым?" : "Удалить файл «" + item.name + "»?";
     if (!confirm(q)) return;
-    post("/api/delete", { path: item.rel }).then(refresh).catch(e => toast(e.message, true));
+    delStart(item);
   }
   return tr;
 }
@@ -674,6 +703,138 @@ async function loadLinks(item){
   }
 }
 
+/* ---------- удаление: строка состояния с прогрессом и отменой ---------- */
+let DEL = { id: 0, timer: null, hideH: null };
+
+function fmtNum(n){ return Number(n || 0).toLocaleString("ru-RU"); }
+function fmtDur(sec){
+  if (sec == null || !isFinite(sec)) return "?";
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + " с";
+  const m = Math.round(sec / 60);
+  if (m < 60) return m + " мин";
+  return Math.floor(m / 60) + " ч " + (m % 60) + " мин";
+}
+
+function delStart(item){
+  clearTimeout(DEL.hideH);
+  post("/api/delete", { path: item.rel })
+    .then(r => { if (r.job){ DEL.id = r.job.id; showDelBar(r.job); } startDelPoll(); })
+    .catch(e => toast(e.message, true));
+}
+function startDelPoll(){
+  if (!DEL.timer) DEL.timer = setInterval(delTick, 700);
+  delTick();
+}
+function stopDelPoll(){ clearInterval(DEL.timer); DEL.timer = null; }
+
+async function delTick(){
+  let s;
+  try { s = await api("/api/delete/status"); }
+  catch (e) { stopDelPoll(); return; }
+  if (s.job && (s.active || !DEL.id || s.job.id === DEL.id)) showDelBar(s.job);
+  if (!s.active){
+    stopDelPoll();
+    clearTimeout(DEL.hideH);
+    DEL.hideH = setTimeout(delHide, 20000);   // результат держим 20 с
+    if (s.job) refresh();
+  }
+}
+
+async function delCancel(){
+  if (!confirm("Отменить удаление? Уже удалённые файлы вернуть нельзя —\nостальное останется на месте.")) return;
+  const b = $("delCancel");
+  b.disabled = true; b.textContent = "Останавливаю…";
+  try { await post("/api/delete/cancel", {}); }
+  catch (e) { toast(e.message, true); }
+  delTick();
+}
+
+function delHide(){
+  stopDelPoll();
+  clearTimeout(DEL.hideH);
+  DEL.id = 0;
+  $("delBar").classList.add("hidden");
+  document.body.classList.remove("has-delbar");
+}
+
+/* Строка «идёт удаление»: рисуется по снимку операции с сервера. */
+function showDelBar(j){
+  const bar = $("delBar");
+  bar.classList.remove("hidden");
+  document.body.classList.add("has-delbar");
+
+  const active = !!j.active, scan = j.phase === "scan";
+  bar.classList.remove("done", "cancel", "err", "scanning");
+  if (scan) bar.classList.add("scanning");
+  else if (!active) bar.classList.add(j.phase === "done" ? "done" : (j.phase === "cancelled" ? "cancel" : "err"));
+
+  const where = humanRel(j.rel), prog = $("delProg");
+  let icon = "⚠️", title = "", sub = "";
+  if (scan){
+    icon = "🔍";
+    title = "Подсчёт размера: " + where;
+    sub = "найдено " + fmtNum(j.scanned_files) + " файлов · " + fmtSize(j.scanned_bytes);
+    prog.style.width = "35%";
+  } else if (j.phase === "delete"){
+    icon = "🗑";
+    title = "Удаление: " + where + " — " + j.percent + "%";
+    sub = fmtSize(j.done_bytes) + " из " + fmtSize(j.total_bytes)
+        + " · осталось " + fmtSize(j.left_bytes)
+        + (j.eta != null ? " · ≈" + fmtDur(j.eta) : "")
+        + " · файлов " + fmtNum(j.done_files) + " из " + fmtNum(j.total_files);
+    prog.style.width = j.percent + "%";
+  } else if (j.phase === "done"){
+    if (j.errors){
+      icon = "⚠️";
+      title = "Удалено не полностью: " + where;
+      sub = "удалено " + fmtSize(j.done_bytes) + " из " + fmtSize(j.total_bytes)
+          + " · ошибок " + fmtNum(j.errors)
+          + (j.left_files ? " · осталось файлов " + fmtNum(j.left_files) : "");
+      prog.style.width = j.percent + "%";
+    } else {
+      icon = "✅";
+      title = "Удалено: " + where;
+      sub = fmtSize(j.done_bytes) + " · файлов " + fmtNum(j.done_files)
+          + (j.total_dirs ? " · папок " + fmtNum(j.total_dirs) : "");
+      prog.style.width = "100%";
+    }
+  } else if (j.phase === "cancelled"){
+    icon = "⏹";
+    title = "Удаление отменено: " + where;
+    sub = "удалено " + fmtSize(j.done_bytes) + " из " + fmtSize(j.total_bytes)
+        + (j.total_files ? " (" + j.percent + "%, файлов " + fmtNum(j.done_files)
+                           + " из " + fmtNum(j.total_files) + ")" : "")
+        + " · осталось на диске " + fmtSize(j.left_bytes);
+    prog.style.width = j.percent + "%";
+  } else {
+    title = "Не удалось удалить: " + where;
+    sub = j.error || (j.error_msgs && j.error_msgs[0]) || ("ошибок: " + fmtNum(j.errors));
+    prog.style.width = j.percent + "%";
+  }
+  $("delIcon").textContent = icon;
+  $("delTitle").textContent = title;
+  $("delSub").textContent = sub;
+  bar.title = (j.error_msgs && j.error_msgs.length)
+    ? "Не удалось удалить:\n" + j.error_msgs.slice(0, 5).join("\n") : "";
+  const c = $("delCancel");
+  c.classList.toggle("hidden", !active);
+  c.disabled = !!j.cancelled;
+  c.textContent = j.cancelled ? "Останавливаю…" : "Отменить";
+  $("delClose").classList.toggle("hidden", active);
+}
+
+/* Если удаление идёт (страницу перезагрузили) — показать строку и продолжить опрос. */
+async function delResume(){
+  try {
+    const s = await api("/api/delete/status");
+    if (s.active && s.job){ DEL.id = s.job.id; showDelBar(s.job); startDelPoll(); }
+  } catch (e) { /* нет статуса — просто не показываем */ }
+}
+
+$("delCancel").onclick = delCancel;
+$("delClose").onclick = delHide;
+
 /* ---------- вход/выход ---------- */
 function showLogin(){
   $("app").classList.add("hidden");
@@ -690,6 +851,7 @@ async function init(){
     showApp();
     await loadDisks();
     await loadDir("");
+    delResume();
   } catch (e) { showLogin(); }
 }
 
@@ -703,6 +865,7 @@ $("loginForm").onsubmit = async e => {
     showApp();
     await loadDisks();
     await loadDir("");
+    delResume();
   } catch (err) { $("loginErr").textContent = err.message; }
 };
 $("btnLogout").onclick = async () => { try { await post("/api/logout", {}); } catch (e) {} showLogin(); };
