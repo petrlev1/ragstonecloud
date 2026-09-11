@@ -106,9 +106,10 @@
 
 <div id="login" class="hidden">
   <h1>☁️ Облако</h1>
-  <p>Вход по паролю</p>
+  <p>Вход по логину и паролю</p>
   <form id="loginForm">
-    <input type="password" id="pw" placeholder="Пароль" autofocus autocomplete="current-password">
+    <input type="text" id="user" placeholder="Логин" autofocus autocomplete="username">
+    <input type="password" id="pw" placeholder="Пароль" autocomplete="current-password">
     <div class="err" id="loginErr"></div>
     <button type="submit" class="primary" style="width:100%">Войти</button>
   </form>
@@ -697,7 +698,7 @@ $("loginForm").onsubmit = async e => {
   e.preventDefault();
   $("loginErr").textContent = "";
   try {
-    await post("/api/login", { password: $("pw").value });
+    await post("/api/login", { user: $("user").value, password: $("pw").value });
     $("pw").value = "";
     showApp();
     await loadDisks();

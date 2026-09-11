@@ -10,7 +10,7 @@ fi
 ./venv/bin/pip install -q --disable-pip-version-check -r requirements.txt
 
 if [ ! -f config.json ]; then
-  echo "Первый запуск — придумай пароль для входа в облако:"
+  echo "Первый запуск — придумай логин и пароль для входа в облако:"
   ./venv/bin/python app/setup.py
 fi
 

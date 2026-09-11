@@ -22,6 +22,7 @@ cfg = cfg_mod.load()
 storage.ROOT = cfg["root"]
 SECRET = cfg["secret"]
 PW = cfg["password"]
+USER = (cfg.get("user") or "").strip()   # логин для входа; пусто = только пароль
 SESSION_DAYS = int(cfg.get("session_days", 30))
 HIDE_DOT = bool(cfg.get("hide_dot", True))
 INDEX = os.path.join(cfg_mod.BASE, "static", "index.html")
@@ -92,6 +93,7 @@ def _rate_limited(ip: str) -> bool:
 
 
 class LoginIn(BaseModel):
+    user: str = ""
     password: str
 
 
@@ -100,9 +102,11 @@ def login(body: LoginIn, request: Request):
     ip = _client_ip(request)
     if _rate_limited(ip):
         raise HTTPException(429, "Слишком много попыток — подожди минуту")
-    if not auth.check_password(body.password, PW):
+    ok_user = auth.check_login(body.user, USER)
+    ok_pw = auth.check_password(body.password, PW)
+    if not (ok_user and ok_pw):
         _log_auth_fail(ip)
-        raise HTTPException(401, "Неверный пароль")
+        raise HTTPException(401, "Неверный логин или пароль")
     resp = JSONResponse({"ok": True})
     resp.set_cookie(LOGIN_COOKIE, auth.make_token(SECRET, SESSION_DAYS),
                     max_age=SESSION_DAYS * 86400, httponly=True,

@@ -22,6 +22,15 @@ def check_password(password: str, rec: dict) -> bool:
     return hmac.compare_digest(dk.hex(), rec["hash"])
 
 
+def check_login(user: str, expected: str | None) -> bool:
+    """Сверка логина без учёта регистра и пробелов по краям.
+    expected пуст/None — логин не настроен, вход по одному паролю (старые конфиги)."""
+    expected = (expected or "").strip()
+    if not expected:
+        return True
+    return hmac.compare_digest((user or "").strip().casefold(), expected.casefold())
+
+
 def make_token(secret: str, days: int) -> str:
     """Подписанный токен сессии: cloud.<expiry_unix>.hmac."""
     exp = int(time.time()) + days * 86400

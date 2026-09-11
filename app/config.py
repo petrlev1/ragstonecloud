@@ -9,7 +9,8 @@ DEFAULTS = {
     "root": os.path.expanduser("~"),          # корень хранилища
     "session_days": 30,                        # жизнь сессии, дней
     "hide_dot": True,                          # скрывать .-файлы/.-папки из листинга
-    "secret": None,                            # секрет подписи сессий (генерит setup.py)
+    "secret": None,                            # секрет подписи сессий (генрит setup.py)
+    "user": None,                              # логин для входа; None/пусто = только пароль
     "password": None,                          # {"salt", "hash", "iterations"} — PBKDF2
     "rg": os.path.join(os.path.expanduser("~"), "bin", "rg"),  # путь к ripgrep
     "search_timeout": 240,              # лимит поиска по содержимому, секунд
