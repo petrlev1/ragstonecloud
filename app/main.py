@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from app import auth, config as cfg_mod, disks, indexer, shares, storage
+from app import auth, config as cfg_mod, deleter, disks, indexer, shares, storage
 
 cfg = cfg_mod.load()
 storage.ROOT = cfg["root"]
@@ -288,18 +288,38 @@ def api_move(body: MoveBody, _=Depends(require_auth)):
 
 @app.post("/api/delete")
 def api_delete(body: PathBody, _=Depends(require_auth)):
+    """Запускает удаление в фоне (не ждёт его): UI следит за /api/delete/status."""
     p = storage.safe(body.path)
     if p == storage.ROOT:
         raise HTTPException(403, "Нельзя удалить корень")
-    if os.path.isdir(p) and not os.path.islink(p):
-        storage.rmtree_safe(p)          # свой обход: не спотыкается о симлинки
-    elif os.path.isfile(p) or os.path.islink(p):
-        os.remove(p)
-    else:
+    if not (os.path.isdir(p) or os.path.isfile(p) or os.path.islink(p)):
         raise HTTPException(404, "Не найдено")
-    indexer.delete_path(storage.rel_of(p))
-    _shares_hook(shares.delete_path, storage.rel_of(p))
-    return {"ok": True}
+    try:
+        job = deleter.start(storage.rel_of(p), p, on_finish=_delete_finished)
+    except deleter.Busy as exc:
+        raise HTTPException(409, str(exc))
+    return {"ok": True, "job": job.snapshot()}
+
+
+def _delete_finished(job) -> None:
+    """Хвосты после удаления: индекс поиска и общие ссылки (в рабочем потоке)."""
+    if job.phase == "done" and not job.errors:
+        indexer.delete_path(job.rel)
+        _shares_hook(shares.delete_path, job.rel)
+    elif job.done_files or job.done_dirs:
+        indexer.sync_start()        # удалено частично (отмена/ошибки) — сверим индекс с диском
+
+
+@app.get("/api/delete/status")
+def api_delete_status(_=Depends(require_auth)):
+    """Прогресс удаления: всего МБ/файлов, удалено, скорость, остаток; либо последний результат."""
+    return deleter.status()
+
+
+@app.post("/api/delete/cancel")
+def api_delete_cancel(_=Depends(require_auth)):
+    """Отменить текущее удаление (останавливается перед следующим файлом)."""
+    return {"ok": True, "cancelled": deleter.cancel()}
 
 
 # ---------- поиск (имена + содержимое через ripgrep) ----------
