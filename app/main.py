@@ -292,7 +292,7 @@ def api_delete(body: PathBody, _=Depends(require_auth)):
     if p == storage.ROOT:
         raise HTTPException(403, "Нельзя удалить корень")
     if os.path.isdir(p) and not os.path.islink(p):
-        shutil.rmtree(p)
+        storage.rmtree_safe(p)          # свой обход: не спотыкается о симлинки
     elif os.path.isfile(p) or os.path.islink(p):
         os.remove(p)
     else:

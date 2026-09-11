@@ -83,3 +83,31 @@ def unique_name(dir_path: str, name: str) -> str:
     while os.path.exists(os.path.join(dir_path, f"{stem} ({i}){ext}")):
         i += 1
     return f"{stem} ({i}){ext}"
+
+
+def rmtree_safe(abs_path: str) -> None:
+    """Удалить дерево, не разыменовывая симлинки.
+
+    shutil.rmtree в Python 3.13+ отказывается идти по симлинку-папке (защита
+    от подмены, GH-46010): на сетевом маунте (sshfs) это выглядит как
+    «OSError: Cannot call rmtree on a symbolic link» и обрывает удаление с 500,
+    причём частично (что успело стереться — стёрто). Здесь симлинк снимается
+    сам (цель не трогаем), вложенные папки обходятся не следуя ссылкам.
+    """
+    def _raise(err: OSError) -> None:      # ошибки доступа не глотаем (как rmtree)
+        raise err
+
+    for root, dirs, files in os.walk(abs_path, topdown=False,
+                                     followlinks=False, onerror=_raise):
+        for name in files:
+            os.unlink(os.path.join(root, name))
+        for name in dirs:
+            full = os.path.join(root, name)
+            if os.path.islink(full):
+                os.unlink(full)            # симлинк-папка: снимаем ссылку
+            else:
+                os.rmdir(full)
+    if os.path.islink(abs_path):
+        os.unlink(abs_path)
+    else:
+        os.rmdir(abs_path)
