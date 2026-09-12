@@ -31,6 +31,11 @@
   th{background:#f2f4f7;color:#57606a;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
   tbody tr:hover{background:#f6f9fe}
   .num{text-align:right;white-space:nowrap}
+  /* сортировка: клик по заголовку столбца — ↑ / ↓ / по умолчанию */
+  th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+  th.sortable:hover{color:var(--accent);background:#e8f0fe}
+  th.sortable.on{color:var(--accent)}
+  th.sortable .ar{font-size:10px;margin-left:5px}
   .nm{display:inline-flex;align-items:center;gap:8px;color:var(--text);text-decoration:none;cursor:pointer;overflow-wrap:anywhere}
   .nm:hover{color:var(--accent)}
   .nm .ic{font-size:16px}
@@ -100,7 +105,13 @@
   .crumbs{min-width:40px;overflow-x:auto;-webkit-overflow-scrolling:touch}
   #q{min-width:0;flex:1 1 100%;order:9}
   header button{padding:5px 10px}
-  thead{display:none}
+  /* на мобильном заголовки не прячем — это панель сортировки */
+  thead{display:block}
+  thead tr{display:flex;flex-wrap:wrap;gap:6px;background:transparent;border:none;border-radius:0;padding:0;margin:0 0 8px;grid-template-areas:none}
+  thead th{display:block;background:#fff;border:1px solid var(--border);border-radius:8px;padding:5px 10px;
+           font-size:12px;text-transform:none;letter-spacing:0;white-space:nowrap}
+  thead th:nth-child(4){display:none}
+  thead th.on{border-color:var(--accent);background:#e8f0fe;color:var(--accent)}
   table, tbody{display:block;border:none;background:transparent}
   #tbl{border:none}
   tr{display:grid;grid-template-areas:"name acts" "size date";grid-template-columns:minmax(0,1fr) auto;
@@ -151,7 +162,12 @@
     <div id="note" class="note hidden"></div>
     <div id="empty" class="empty hidden"></div>
     <table id="tbl" class="hidden">
-      <thead><tr><th>Имя</th><th class="num">Размер</th><th class="num" id="thDate">Изменён</th><th style="width:330px"></th></tr></thead>
+      <thead><tr>
+        <th class="sortable" data-sort="name" title="Сортировать по имени: 1-й клик — по возрастанию, 2-й — по убыванию, 3-й — порядок по умолчанию">Имя<span class="ar"></span></th>
+        <th class="sortable num" data-sort="size" title="Сортировать по размеру (папки — всегда сверху)">Размер<span class="ar"></span></th>
+        <th class="sortable num" data-sort="mtime" id="thDate" title="Сортировать по дате изменения"><span class="lbl">Изменён</span><span class="ar"></span></th>
+        <th style="width:330px"></th>
+      </tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </main>
@@ -346,6 +362,59 @@ function renderCrumbs(){
   for (const p of rest) { acc = acc ? acc + "/" + p : p; add(p, acc); }
 }
 
+/* ---------- сортировка списка (клик по заголовку столбца) ---------- */
+/* SORT = null — порядок с сервера (для поиска — по релевантности); иначе {key,dir} */
+function loadSort(){
+  try {
+    const v = JSON.parse(localStorage.getItem("cloud.sort") || "null");
+    if (v && ["name", "size", "mtime"].includes(v.key) && (v.dir === 1 || v.dir === -1)) return v;
+  } catch (e) {}
+  return null;
+}
+function saveSort(){
+  try {
+    if (SORT) localStorage.setItem("cloud.sort", JSON.stringify(SORT));
+    else localStorage.removeItem("cloud.sort");
+  } catch (e) {}
+}
+let SORT = loadSort();
+
+/* dateKey — поле с датой: у листинга mtime, у общих ссылок created */
+function sortItems(items, dateKey = "mtime"){
+  if (!SORT || items.length < 2) return items.slice();
+  const key = SORT.key === "mtime" ? dateKey : SORT.key, dir = SORT.dir;
+  const cmp = (a, b) => {
+    let r;
+    if (key === "name") r = String(a.name).localeCompare(String(b.name), "ru", { numeric: true, sensitivity: "base" });
+    else if (key === "size") r = (a.size == null ? -1 : a.size) - (b.size == null ? -1 : b.size);
+    else r = (a[key] || 0) - (b[key] || 0);
+    return r * dir;
+  };
+  const dirs = [], files = [];        // папки всегда сверху — как в проводнике
+  for (const it of items) (it.type === "dir" ? dirs : files).push(it);
+  dirs.sort(cmp); files.sort(cmp);
+  return dirs.concat(files);
+}
+
+function setHeaderSort(){
+  for (const th of document.querySelectorAll("#tbl thead th.sortable")){
+    const on = !!SORT && th.dataset.sort === SORT.key;
+    th.classList.toggle("on", on);
+    th.querySelector(".ar").textContent = on ? (SORT.dir === 1 ? "\u25b2" : "\u25bc") : "";
+  }
+}
+function clickSort(key){
+  if (!SORT || SORT.key !== key) SORT = { key: key, dir: 1 };
+  else if (SORT.dir === 1) SORT = { key: key, dir: -1 };
+  else SORT = null;                   // третий клик — снова порядок по умолчанию
+  saveSort(); setHeaderSort(); refresh();
+}
+function setDateCol(label, title){
+  const th = $("thDate");
+  th.querySelector(".lbl").textContent = label;
+  if (title) th.title = title;
+}
+
 function makeRow(item, inSearch){
   const tr = document.createElement("tr");
   const tdName = document.createElement("td");
@@ -439,7 +508,7 @@ function render(items){
   }
   empty.classList.add("hidden");
   tbl.classList.remove("hidden");
-  for (const it of items) rows.appendChild(makeRow(it, !!S.search));
+  for (const it of sortItems(items)) rows.appendChild(makeRow(it, !!S.search));
   $("btnUpload").classList.toggle("hidden", !!S.search);
   $("btnFolder").classList.toggle("hidden", !!S.search);
 }
@@ -447,7 +516,7 @@ function render(items){
 async function loadDir(path){
   S.cur = path || ""; S.search = null; S.view = "browse"; $("q").value = "";
   headerBrowse(true);
-  $("thDate").textContent = "Изменён";
+  setDateCol("Изменён", "Сортировать по дате изменения");
   setNote("");
   S.busy = true;
   try {
@@ -539,7 +608,7 @@ async function loadShares(){
   $("q").value = "";
   headerBrowse(false);
   setNote("");
-  $("thDate").textContent = "Создана";
+  setDateCol("Создана", "Сортировать по дате создания ссылки");
   $("tbl").classList.add("hidden");
   $("empty").classList.remove("hidden");
   $("empty").textContent = "Загружаю ссылки…";
@@ -564,7 +633,7 @@ function drawShares(list){
   }
   empty.classList.add("hidden");
   tbl.classList.remove("hidden");
-  for (const s of list) {
+  for (const s of sortItems(list, "created")) {
     const tr = document.createElement("tr");
 
     const tdName = document.createElement("td");
@@ -870,6 +939,9 @@ $("loginForm").onsubmit = async e => {
 };
 $("btnLogout").onclick = async () => { try { await post("/api/logout", {}); } catch (e) {} showLogin(); };
 $("q").onkeydown = e => { if (e.key === "Enter") runSearch(); };
+for (const th of document.querySelectorAll("#tbl thead th.sortable"))
+  th.onclick = () => clickSort(th.dataset.sort);
+setHeaderSort();
 $("btnUpload").onclick = () => $("fileInput").click();
 $("fileInput").onchange = () => { uploadFiles($("fileInput").files); $("fileInput").value = ""; };
 $("btnFolder").onclick = async () => {
