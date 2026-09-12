@@ -14,7 +14,11 @@
   .hidden{display:none!important}
   header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:#fff;border-bottom:1px solid var(--border);position:sticky;top:0;flex-wrap:wrap}
   .brand{font-size:18px;font-weight:700;white-space:nowrap}
-  .crumbs{display:flex;align-items:center;gap:2px;flex:1;min-width:150px;overflow-x:auto;white-space:nowrap}
+  /* путь (крошки): отдельная строка во всю ширину шапки, без горизонтальной прокрутки —
+     длинный путь переносится на следующую строку, а не уезжает за край */
+  .crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:2px;order:10;flex:1 1 100%;
+          min-width:0;white-space:normal;overflow-wrap:anywhere;
+          border-top:1px solid #eceff2;margin-top:2px;padding-top:6px}
   .crumbs a{color:var(--accent);text-decoration:none;padding:2px 4px;border-radius:4px}
   .crumbs a:hover{background:#e8f0fe}
   .crumbs .sep{color:var(--muted)}
@@ -102,7 +106,7 @@
   main{padding:10px}
   header{padding:8px 10px;gap:8px}
   header .brand{font-size:16px}
-  .crumbs{min-width:40px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .crumbs{min-width:0;white-space:normal;overflow-wrap:anywhere}
   #q{min-width:0;flex:1 1 100%;order:9}
   header button{padding:5px 10px}
   /* на мобильном заголовки не прячем — это панель сортировки */
