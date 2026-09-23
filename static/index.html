@@ -368,7 +368,7 @@ function renderCrumbs(){
     const a = document.createElement("a");
     a.textContent = "✕ Поиск: «" + S.search.q + "»";
     a.title = "Вернуться в папку";
-    a.onclick = () => { S.search = null; $("q").value = ""; loadDir(S.cur); };
+    a.onclick = () => { S.search = null; $("q").value = ""; loadDir(S.cur, "push"); };
     box.appendChild(a);
     return;
   }
@@ -381,7 +381,7 @@ function renderCrumbs(){
     a.title = humanRel(path) + " (Ctrl/Cmd-клик — в новой вкладке)";
     a.onclick = e => {
       if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
-      e.preventDefault(); loadDir(path);
+      e.preventDefault(); loadDir(path, "push");
     };
     box.appendChild(a);
     if (path !== S.cur) box.appendChild(Object.assign(document.createElement("span"), { className: "sep", textContent: "›" }));
@@ -447,21 +447,38 @@ function setDateCol(label, title){
   if (title) th.title = title;
 }
 
-/* ---------- адрес папки в строке браузера (?path=…) ---------- */
-/* Нужен, чтобы папку можно было открыть в новой вкладке (поиск в текущей не теряется),
-   переслать ссылку или вернуться по закладке. */
-function folderHref(rel, hit){
+/* ---------- состояние в адресе страницы: ?path=… (папка), ?q=… (поиск), ?hit=… (подсветка) ---------- */
+/* Нужно, чтобы папку или результаты поиска можно было открыть в новой вкладке, переслать
+   ссылкой, вернуть кнопкой «назад» или обновить страницу (F5) без потери состояния. */
+function viewHref(o){
   const u = new URL(location.href);
-  if (rel) u.searchParams.set("path", rel); else u.searchParams.delete("path");
-  if (hit) u.searchParams.set("hit", hit); else u.searchParams.delete("hit");
+  if (o.q) u.searchParams.set("q", o.q); else u.searchParams.delete("q");
+  if (o.path) u.searchParams.set("path", o.path); else u.searchParams.delete("path");
+  if (o.hit) u.searchParams.set("hit", o.hit); else u.searchParams.delete("hit");
   return u.pathname + u.search;
 }
-function setFolderUrl(rel){
-  try { history.replaceState(null, "", folderHref(rel)); } catch (e) {}
+function folderHref(rel, hit){ return viewHref({ path: rel, hit: hit }); }
+function setUrl(href, push){
+  try {
+    if (push && href !== location.pathname + location.search) history.pushState(null, "", href);
+    else history.replaceState(null, "", href);
+  } catch (e) {}
 }
 function openFolderWindow(rel, hit){
   window.open(folderHref(rel, hit), "_blank");
 }
+/* разбор адреса: {path, q, hit} */
+function urlState(){
+  const p = new URLSearchParams(location.search);
+  return { path: p.get("path") || "", q: (p.get("q") || "").trim(), hit: p.get("hit") || "" };
+}
+/* «назад»/«вперёд» в браузере — восстанавливаем состояние из адреса */
+window.addEventListener("popstate", () => {
+  if (typeof Gal !== "undefined" && Gal.isOpen()) Gal.close();
+  const st = urlState();
+  if (st.q){ S.cur = st.path; runSearch(st.q, "replace"); }
+  else loadDir(st.path, "replace");
+});
 
 /* ---------- путь найденного файла: крошки и переход в папку ---------- */
 /* rel всегда с прямыми слэшами (на Windows-копии сервер отдаёт '\') */
@@ -498,7 +515,7 @@ function pathCrumbs(item){
     a.onclick = e => {
       if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;   // пусть откроет браузер
       e.preventDefault(); e.stopPropagation();
-      loadDir(seg.path);
+      loadDir(seg.path, "push");
     };
     box.appendChild(a);
     if (i < chain.length - 1) box.appendChild(Object.assign(document.createElement("span"),
@@ -514,7 +531,7 @@ let HIT = null;
 function openParent(item, sameWindow){
   const rel = normRel(item.rel);
   const folder = parentRel(rel);
-  if (sameWindow){ HIT = rel; loadDir(folder); return; }
+  if (sameWindow){ HIT = rel; loadDir(folder, "push"); return; }
   openFolderWindow(folder, rel);
 }
 function flashHit(){
@@ -542,7 +559,7 @@ function makeRow(item, inSearch){
     a.title = item.name + " (Ctrl/Cmd-клик — в новой вкладке)";
     a.onclick = e => {
       if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
-      e.preventDefault(); loadDir(item.rel);
+      e.preventDefault(); loadDir(item.rel, "push");
     };
   } else {
     a.href = "/api/file?path=" + encodeURIComponent(item.rel);
@@ -666,9 +683,9 @@ function viewOpts(extra){
     iconOf: iconOf, fmtSize: fmtSize, fmtDate: fmtDate,
     /* в результатах поиска карточка галереи показывает путь до папки (кликабельный) */
     crumbsOf: it => (S.search ? parentChain(it) : null),
-    onOpenPath: p => loadDir(p),
+    onOpenPath: p => loadDir(p, "push"),
     onOpenWindow: it => openFolderWindow(it.rel),
-    onOpen: it => { if (it.type === "dir") loadDir(it.rel); else openViewer(it); }
+    onOpen: it => { if (it.type === "dir") loadDir(it.rel, "push"); else openViewer(it); }
   }, extra || {});
 }
 function openViewer(item){
@@ -718,7 +735,7 @@ function syncSortSel(){
   if (sel) sel.value = SORT ? SORT.key + ":" + SORT.dir : "";
 }
 
-async function loadDir(path){
+async function loadDir(path, hist){
   S.cur = path || ""; S.search = null; S.view = "browse"; $("q").value = "";
   headerBrowse(true);
   setDateCol("Изменён", "Сортировать по дате изменения");
@@ -727,7 +744,7 @@ async function loadDir(path){
   try {
     const data = await api("/api/list?path=" + encodeURIComponent(path || ""));
     render(data.items);
-    setFolderUrl(S.cur);                 // папка попадает в адрес: ссылку можно открыть/переслать
+    setUrl(viewHref({ path: S.cur }), hist === "push");   // папка в адресе: ссылка, «назад», F5
     return true;
   } catch (e) {
     if (e.message !== "Требуется вход") toast(e.message, true);
@@ -735,9 +752,12 @@ async function loadDir(path){
   } finally { S.busy = false; }
 }
 
-async function runSearch(){
-  const q = $("q").value.trim();
-  if (!q || S.busy) return;
+/* Поиск. q — строка запроса (по умолчанию из поля ввода); hist="push" — новый шаг истории
+   (клик/Enter), иначе адрес просто обновляется (сортировка, перерисовка, разбор адреса). */
+async function runSearch(q, hist){
+  q = (q == null ? $("q").value : q).trim();
+  if (!q || S.busy) return false;
+  $("q").value = q;
   S.busy = true;
   const t0 = Date.now();
   const timer = setInterval(() => setNote(`Ищу… ${Math.round((Date.now() - t0) / 1000)} с`), 1000);
@@ -746,12 +766,16 @@ async function runSearch(){
     S.search = { q };
     setNote(data.note || "");
     render(data.items);
-  } catch (e) { if (e.message !== "Требуется вход") toast(e.message, true); }
-  finally { clearInterval(timer); S.busy = false; }
+    setUrl(viewHref({ path: S.cur, q: q }), hist === "push");
+    return true;
+  } catch (e) {
+    if (e.message !== "Требуется вход") toast(e.message, true);
+    return false;
+  } finally { clearInterval(timer); S.busy = false; }
 }
 function refresh(){
   if (S.view === "shares") { loadShares(); return; }
-  if (S.search) { $("q").value = S.search.q; runSearch(); }
+  if (S.search) runSearch(S.search.q);
   else loadDir(S.cur);
 }
 
@@ -1132,10 +1156,14 @@ async function init(){
     await api("/api/me");
     showApp();
     await loadDisks();
-    const start = new URLSearchParams(location.search);
-    HIT = normRel(start.get("hit") || "") || null;   // файл для подсветки (из «В папку» в новой вкладке)
-    const path = start.get("path") || "";
-    if (!(await loadDir(path))) await loadDir("");   // папки нет/устарела ссылка — открываем корень
+    const st = urlState();
+    HIT = normRel(st.hit) || null;      // файл для подсветки (из «В папку» в новой вкладке)
+    if (st.q){                          // в адресе поиск — сразу показываем результаты
+      S.cur = st.path;
+      if (!(await runSearch(st.q, "replace"))) await loadDir(st.path, "replace");
+    } else if (!(await loadDir(st.path, "replace")) && st.path){
+      await loadDir("", "replace");      // папки нет/устарела ссылка — открываем корень
+    }
     delResume();
   } catch (e) { showLogin(); }
 }
@@ -1154,7 +1182,7 @@ $("loginForm").onsubmit = async e => {
   } catch (err) { $("loginErr").textContent = err.message; }
 };
 $("btnLogout").onclick = async () => { try { await post("/api/logout", {}); } catch (e) {} showLogin(); };
-$("q").onkeydown = e => { if (e.key === "Enter") runSearch(); };
+$("q").onkeydown = e => { if (e.key === "Enter") runSearch(null, "push"); };
 for (const th of document.querySelectorAll("#tbl thead th.sortable"))
   th.onclick = () => clickSort(th.dataset.sort);
 setHeaderSort();
