@@ -44,6 +44,14 @@
   .nm:hover{color:var(--accent)}
   .nm .ic{font-size:16px}
   .sub{color:var(--muted);font-size:12px;margin-left:24px;overflow-wrap:anywhere}
+  /* путь найденного файла (результаты поиска): крошки-ссылки на папки */
+  .crumbs-sub a{color:var(--accent);text-decoration:none;padding:1px 3px;border-radius:4px}
+  .crumbs-sub a:hover{background:#e8f0fe;text-decoration:underline}
+  .crumbs-sub .sep{color:var(--muted);padding:0 1px}
+  /* мигание строки (или карточки), к которой вернулись из поиска */
+  tr.hit{background:#fff6c9;box-shadow:inset 3px 0 0 #e3b341}
+  .gcard.hit{box-shadow:0 0 0 2px #e3b341;background:#fff6c9}
+  tbody tr.hit:hover{background:#fff6c9}
   .acts{display:flex;gap:6px;justify-content:flex-end}
   .acts button,.acts a{font-size:12px;padding:3px 8px;text-decoration:none;display:inline-block;line-height:1.5}
   .acts a{color:var(--text);border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer}
@@ -133,6 +141,9 @@
   .acts button,.acts a{padding:3px 7px;font-size:12px}
   dialog{min-width:0;max-width:calc(100vw - 20px)}
   tbody tr:hover{background:#fff}
+  /* крошки пути найденного файла на узком экране переносятся, а не обрезаются */
+  .crumbs-sub{margin-left:0;white-space:normal;overflow:visible;text-overflow:clip;
+              display:flex;flex-wrap:wrap;align-items:center;gap:1px}
 }
 </style>
 <link rel="stylesheet" href="/static/gallery.css">
@@ -431,8 +442,63 @@ function setDateCol(label, title){
   if (title) th.title = title;
 }
 
+/* ---------- путь найденного файла: крошки и переход в папку ---------- */
+/* rel всегда с прямыми слэшами (на Windows-копии сервер отдаёт '\') */
+function normRel(rel){ return String(rel || "").replace(/\\/g, "/"); }
+function parentRel(rel){ return normRel(rel).split("/").slice(0, -1).join("/"); }
+
+/* Крошки пути найденного файла: «…/ диск › папка › папка», каждый сегмент — ссылка
+   на свою папку. Нужны именно в результатах поиска (файл лежит в другой папке). */
+function parentChain(item){
+  const parent = parentRel(item.rel);
+  const disk = diskOf(parent), base = disk.rel;
+  const rest = base
+    ? (parent === base ? [] : parent.slice(base.length + 1).split("/"))
+    : parent.split("/").filter(Boolean);
+  const out = [{ label: disk.name, path: base }];
+  let acc = base;
+  for (const p of rest){ acc = acc ? acc + "/" + p : p; out.push({ label: p, path: acc }); }
+  return out;
+}
+
+function pathCrumbs(item){
+  const box = document.createElement("div");
+  box.className = "sub crumbs-sub";
+  box.appendChild(Object.assign(document.createElement("span"), { textContent: "…/" }));
+  const chain = parentChain(item);
+  chain.forEach((seg, i) => {
+    const a = document.createElement("a");
+    a.textContent = seg.label;
+    a.href = "#";
+    a.title = "Открыть папку: " + humanRel(seg.path);
+    a.onclick = e => { e.preventDefault(); e.stopPropagation(); loadDir(seg.path); };
+    box.appendChild(a);
+    if (i < chain.length - 1) box.appendChild(Object.assign(document.createElement("span"),
+      { className: "sep", textContent: "›" }));
+  });
+  return box;
+}
+
+/* Переход в папку найденного файла: открыть и мигнуть строкой этого файла */
+let HIT = null;
+function openParent(item){
+  HIT = normRel(item.rel);
+  loadDir(parentRel(item.rel));
+}
+function flashHit(){
+  const rel = HIT;
+  HIT = null;
+  if (!rel) return;
+  const el = document.querySelector('#rows tr[data-rel="' + rel.replace(/"/g, '\\"') + '"], #grid .gcard[data-rel="' + rel.replace(/"/g, '\\"') + '"]');
+  if (!el) return;
+  el.classList.add("hit");
+  if (el.scrollIntoView) el.scrollIntoView({ block: "center", behavior: "smooth" });
+  setTimeout(() => el.classList.remove("hit"), 3500);
+}
+
 function makeRow(item, inSearch){
   const tr = document.createElement("tr");
+  tr.dataset.rel = normRel(item.rel);
   const tdName = document.createElement("td");
   const a = document.createElement("a");
   a.className = "nm";
@@ -454,11 +520,7 @@ function makeRow(item, inSearch){
     };
   }
   tdName.appendChild(a);
-  if (inSearch) {
-    const sub = document.createElement("div");
-    sub.className = "sub"; sub.textContent = "…/" + humanRel(item.rel);
-    tdName.appendChild(sub);
-  }
+  if (inSearch) tdName.appendChild(pathCrumbs(item));
   tr.appendChild(tdName);
 
   const tdSize = document.createElement("td");
@@ -484,6 +546,10 @@ function makeRow(item, inSearch){
   exp.title = "Показать в проводнике Windows (диск Z:)";
   exp.href = "cloudopen:" + item.rel.split("/").map(encodeURIComponent).join("/");
   acts.appendChild(exp);
+  if (inSearch) {
+    const up = btn("📁 В папку", null, () => openParent(item));
+    up.title = "Открыть папку с этим файлом в облаке";
+  }
   const sh = btn("🔗", null, () => shareDialog(item));
   sh.title = "Общая ссылка — просмотр без входа";
   btn("⬇", null, () => location.href = "/api/download?path=" + encodeURIComponent(item.rel));
@@ -529,6 +595,7 @@ function render(items){
     empty.textContent = S.search ? "Ничего не найдено" : "Папка пуста";
     $("btnUpload").classList.toggle("hidden", !!S.search);
     $("btnFolder").classList.toggle("hidden", !!S.search);
+    flashHit();
     return;
   }
   empty.classList.add("hidden");
@@ -540,12 +607,14 @@ function render(items){
     grid.classList.remove("hidden");
     $("sortBar").classList.remove("hidden");
     Gal.grid(grid, sorted, viewOpts());
+    flashHit();
   } else {
     grid.textContent = "";
     grid.classList.add("hidden");
     tbl.classList.remove("hidden");
     $("sortBar").classList.add("hidden");
     for (const it of sorted) rows.appendChild(makeRow(it, !!S.search));
+    flashHit();
   }
 }
 
@@ -559,6 +628,9 @@ function viewOpts(extra){
   return Object.assign({
     fileUrl: fileUrl, dlUrl: dlUrl, thumbUrl: thumbUrl, textUrl: textUrlFn,
     iconOf: iconOf, fmtSize: fmtSize, fmtDate: fmtDate,
+    /* в результатах поиска карточка галереи показывает путь до папки (кликабельный) */
+    crumbsOf: it => (S.search ? parentChain(it) : null),
+    onOpenPath: p => loadDir(p),
     onOpen: it => { if (it.type === "dir") loadDir(it.rel); else openViewer(it); }
   }, extra || {});
 }

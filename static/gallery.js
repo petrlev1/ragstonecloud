@@ -84,10 +84,30 @@ window.Gal = (function(){
     const sub = it.type === "dir" ? "папка"
       : [(opt.fmtSize ? opt.fmtSize(it.size) : ""), (it.mtime && opt.fmtDate ? opt.fmtDate(it.mtime) : "")]
           .filter(Boolean).join(" · ");
-    c.appendChild(el("div", "gsub", sub));
+    const crumbs = opt.crumbsOf ? opt.crumbsOf(it) : null;
+    if (crumbs && crumbs.length){
+      /* результат поиска: вместо размера/даты — кликабельный путь до папки */
+      const line = el("div", "gsub gsub-crumbs");
+      line.appendChild(el("span", null, "…/"));
+      crumbs.forEach((seg, i) => {
+        const a = el("a", null, seg.label);
+        a.href = "#";
+        a.title = "Открыть папку: " + seg.path;
+        a.onclick = e => {
+          e.preventDefault(); e.stopPropagation();
+          if (opt.onOpenPath) opt.onOpenPath(seg.path);
+        };
+        line.appendChild(a);
+        if (i < crumbs.length - 1) line.appendChild(el("span", "sep", "›"));
+      });
+      c.appendChild(line);
+    } else {
+      c.appendChild(el("div", "gsub", sub));
+    }
 
     c.title = it.name;
     c.tabIndex = 0;
+    c.dataset.rel = String(it.rel || "").replace(/\\/g, "/");
     c.onclick = () => opt.onOpen(it);
     c.onkeydown = e => { if (e.key === "Enter" || e.key === " "){ e.preventDefault(); opt.onOpen(it); } };
     return c;

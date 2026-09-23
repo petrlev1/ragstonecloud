@@ -17,6 +17,11 @@
 .gcap{padding:7px 9px 2px;font-size:13px}
 .gnm{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gsub{padding:0 9px 8px;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* результат поиска: путь до папки на карточке — переносится, а не обрезается */
+.gsub-crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:1px;white-space:normal;overflow:visible;text-overflow:clip}
+.gsub-crumbs a{color:var(--accent);text-decoration:none;padding:0 2px;border-radius:3px}
+.gsub-crumbs a:hover{background:#e8f0fe;text-decoration:underline}
+.gsub-crumbs .sep{color:var(--muted)}
 
 /* ---------- окно просмотра ---------- */
 body.lb-open{overflow:hidden}
