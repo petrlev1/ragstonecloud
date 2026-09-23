@@ -91,9 +91,10 @@ window.Gal = (function(){
       line.appendChild(el("span", null, "…/"));
       crumbs.forEach((seg, i) => {
         const a = el("a", null, seg.label);
-        a.href = "#";
-        a.title = "Открыть папку: " + seg.path;
+        a.href = seg.href || "#";
+        a.title = "Открыть папку: " + seg.path + " (Ctrl/Cmd-клик — в новой вкладке)";
         a.onclick = e => {
+          if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;   // пусть откроет браузер
           e.preventDefault(); e.stopPropagation();
           if (opt.onOpenPath) opt.onOpenPath(seg.path);
         };
@@ -108,7 +109,11 @@ window.Gal = (function(){
     c.title = it.name;
     c.tabIndex = 0;
     c.dataset.rel = String(it.rel || "").replace(/\\/g, "/");
-    c.onclick = () => opt.onOpen(it);
+    c.onclick = e => {
+      /* папку можно открыть в новой вкладке (Ctrl/Cmd-клик) — если страница это умеет */
+      if (it.type === "dir" && (e.ctrlKey || e.metaKey) && opt.onOpenWindow){ opt.onOpenWindow(it); return; }
+      opt.onOpen(it);
+    };
     c.onkeydown = e => { if (e.key === "Enter" || e.key === " "){ e.preventDefault(); opt.onOpen(it); } };
     return c;
   }
