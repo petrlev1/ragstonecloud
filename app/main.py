@@ -16,7 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from app import auth, config as cfg_mod, deleter, disks, indexer, shares, storage
+from app import (auth, config as cfg_mod, deleter, disks, indexer, preview,
+                 shares, storage)
 
 cfg = cfg_mod.load()
 storage.ROOT = cfg["root"]
@@ -37,6 +38,8 @@ indexer.init(cfg)
 shares.init(cfg)
 # «диски» для шапки UI (config.json "disks"): имена + место/тип носителя
 disks.init(cfg)
+# миниатюры/предпросмотр: кэш миниатюр вне хранилища (не в git)
+preview.init(cfg)
 
 app = FastAPI(title="Облако", docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=os.path.join(cfg_mod.BASE, "static")), name="static")
@@ -168,6 +171,33 @@ def api_file(path: str, _=Depends(require_auth)):
     media = mimetypes.guess_type(p)[0] or "application/octet-stream"
     return FileResponse(p, media_type=media, filename=os.path.basename(p),
                         content_disposition_type="inline")
+
+
+@app.get("/api/thumb")
+def api_thumb(path: str, w: int = preview.DEFAULT_W, _=Depends(require_auth)):
+    """Миниатюра изображения (jpeg, из дискового кэша) — для галереи."""
+    p = storage.safe(path)
+    if not os.path.isfile(p):
+        raise HTTPException(404, "Файл не найден")
+    t = preview.thumb(p, w)
+    if not t:
+        raise HTTPException(415, "Миниатюра недоступна")
+    return FileResponse(t, media_type="image/jpeg",
+                        headers={"Cache-Control": "private, max-age=604800"})
+
+
+@app.get("/api/text")
+def api_text(path: str, _=Depends(require_auth)):
+    """Текст файла для предпросмотра (utf-8, при неудаче cp1251; длинное обрезается)."""
+    p = storage.safe(path)
+    if not os.path.isfile(p):
+        raise HTTPException(404, "Файл не найден")
+    try:
+        return preview.read_text(p)
+    except ValueError as exc:
+        raise HTTPException(413, str(exc))
+    except OSError:
+        raise HTTPException(400, "Не удалось прочитать файл")
 
 
 def _zip_dir(abs_dir: str):
@@ -502,6 +532,33 @@ def s_share_file(token: str, p: str = ""):
     return FileResponse(target, media_type=media,
                         filename=os.path.basename(target),
                         content_disposition_type="inline")
+
+
+@app.get("/api/s/{token}/thumb")
+def s_share_thumb(token: str, p: str = "", w: int = preview.DEFAULT_W):
+    """Миниатюра изображения внутри шары (галерея гостя)."""
+    _, target, _ = _guest(token, p)
+    if not os.path.isfile(target):
+        raise HTTPException(404, "Файл не найден")
+    t = preview.thumb(target, w)
+    if not t:
+        raise HTTPException(415, "Миниатюра недоступна")
+    return FileResponse(t, media_type="image/jpeg",
+                        headers={"Cache-Control": "private, max-age=604800"})
+
+
+@app.get("/api/s/{token}/text")
+def s_share_text(token: str, p: str = ""):
+    """Текст файла внутри шары (предпросмотр)."""
+    _, target, _ = _guest(token, p)
+    if not os.path.isfile(target):
+        raise HTTPException(404, "Файл не найден")
+    try:
+        return preview.read_text(target)
+    except ValueError as exc:
+        raise HTTPException(413, str(exc))
+    except OSError:
+        raise HTTPException(400, "Не удалось прочитать файл")
 
 
 @app.get("/api/s/{token}/download")

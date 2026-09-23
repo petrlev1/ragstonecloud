@@ -135,6 +135,7 @@
   tbody tr:hover{background:#fff}
 }
 </style>
+<link rel="stylesheet" href="/static/gallery.css">
 </head>
 <body>
 
@@ -156,6 +157,7 @@
     <span id="diskInfo" class="mini"></span>
     <div class="crumbs" id="crumbs"></div>
     <input id="q" placeholder="Поиск по имени и содержимому…" autocomplete="off">
+    <button id="btnView" title="Вид: список / галерея">⬚ Галерея</button>
     <button id="btnIndex" title="Обновить индекс поиска">⟳ Индекс</button>
     <button id="btnUpload" title="Загрузить файлы в текущую папку">⬆ Загрузить</button>
     <button id="btnFolder">＋ Папка</button>
@@ -164,6 +166,10 @@
   </header>
   <main>
     <div id="note" class="note hidden"></div>
+    <div id="sortBar" class="hidden">
+      <span>Сортировка:</span>
+      <select id="sortSel" title="Порядок файлов в галерее"></select>
+    </div>
     <div id="empty" class="empty hidden"></div>
     <table id="tbl" class="hidden">
       <thead><tr>
@@ -174,6 +180,7 @@
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
+    <div id="grid" class="gal hidden"></div>
   </main>
   <input type="file" id="fileInput" multiple class="hidden">
 </div>
@@ -214,10 +221,14 @@
 <div id="prog"><div class="bar" id="progBar"></div></div>
 <div id="toast"></div>
 
+<script src="/static/gallery.js"></script>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-const S = { cur: "", search: null, busy: false, view: "browse" };
+const S = { cur: "", search: null, busy: false, view: "browse", items: null };
+/* вид содержимого папки: список (таблица) или галерея — переключатель в шапке, выбор запоминается */
+let VIEW = "list";
+try { if (localStorage.getItem("cloud.view") === "grid") VIEW = "grid"; } catch (e) {}
 /* «диски» приходят с сервера: GET /api/disks (список из config.json + место и тип носителя).
    Элемент: {rel, name, type, total, used, free}; rel — виртуальный корень в хранилище. */
 let DISKS = [{ rel: "", name: "Облако" }];
@@ -406,6 +417,7 @@ function setHeaderSort(){
     th.classList.toggle("on", on);
     th.querySelector(".ar").textContent = on ? (SORT.dir === 1 ? "\u25b2" : "\u25bc") : "";
   }
+  syncSortSel();
 }
 function clickSort(key){
   if (!SORT || SORT.key !== key) SORT = { key: key, dir: 1 };
@@ -434,7 +446,12 @@ function makeRow(item, inSearch){
   } else {
     a.href = "/api/file?path=" + encodeURIComponent(item.rel);
     a.target = "_blank"; a.rel = "noopener";
-    a.title = item.name;
+    a.title = item.name + " — открыть просмотр";
+    a.onclick = e => {                      // клик — окно просмотра; Ctrl/Cmd-клик открывает файл в новой вкладке
+      if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+      e.preventDefault();
+      openViewer(item);
+    };
   }
   tdName.appendChild(a);
   if (inSearch) {
@@ -498,12 +515,16 @@ function makeRow(item, inSearch){
 }
 
 function render(items){
+  S.items = items;
   renderCrumbs();
   const rows = $("rows");
   rows.textContent = "";
-  const empty = $("empty"), tbl = $("tbl");
+  const empty = $("empty"), tbl = $("tbl"), grid = $("grid"), sorted = sortItems(items);
+  const isGrid = VIEW === "grid";
   if (!items.length) {
     tbl.classList.add("hidden");
+    grid.classList.add("hidden");
+    $("sortBar").classList.add("hidden");
     empty.classList.remove("hidden");
     empty.textContent = S.search ? "Ничего не найдено" : "Папка пуста";
     $("btnUpload").classList.toggle("hidden", !!S.search);
@@ -511,10 +532,81 @@ function render(items){
     return;
   }
   empty.classList.add("hidden");
-  tbl.classList.remove("hidden");
-  for (const it of sortItems(items)) rows.appendChild(makeRow(it, !!S.search));
   $("btnUpload").classList.toggle("hidden", !!S.search);
   $("btnFolder").classList.toggle("hidden", !!S.search);
+  if (isGrid) {
+    grid.textContent = "";
+    tbl.classList.add("hidden");
+    grid.classList.remove("hidden");
+    $("sortBar").classList.remove("hidden");
+    Gal.grid(grid, sorted, viewOpts());
+  } else {
+    grid.textContent = "";
+    grid.classList.add("hidden");
+    tbl.classList.remove("hidden");
+    $("sortBar").classList.add("hidden");
+    for (const it of sorted) rows.appendChild(makeRow(it, !!S.search));
+  }
+}
+
+/* ---------- галерея и окно просмотра (общий модуль Gal: static/gallery.js) ---------- */
+function fileUrl(rel){ return "/api/file?path=" + encodeURIComponent(rel); }
+function dlUrl(rel){ return "/api/download?path=" + encodeURIComponent(rel); }
+function thumbUrl(rel){ return "/api/thumb?path=" + encodeURIComponent(rel) + "&w=240"; }
+function textUrlFn(rel){ return "/api/text?path=" + encodeURIComponent(rel); }
+function filesHere(){ return sortItems(S.items || []).filter(x => x.type !== "dir"); }
+function viewOpts(extra){
+  return Object.assign({
+    fileUrl: fileUrl, dlUrl: dlUrl, thumbUrl: thumbUrl, textUrl: textUrlFn,
+    iconOf: iconOf, fmtSize: fmtSize, fmtDate: fmtDate,
+    onOpen: it => { if (it.type === "dir") loadDir(it.rel); else openViewer(it); }
+  }, extra || {});
+}
+function openViewer(item){
+  const files = filesHere();
+  const i = files.findIndex(f => f.rel === item.rel);
+  if (i < 0) { window.open(fileUrl(item.rel), "_blank"); return; }
+  Gal.open(files, i, viewOpts({ onShare: shareDialog }));
+}
+
+function updateViewBtn(){
+  const isGrid = VIEW === "grid";
+  $("btnView").textContent = isGrid ? "☰ Список" : "⬚ Галерея";
+  $("btnView").title = isGrid ? "Показать списком" : "Показать галереей";
+}
+function applyView(){
+  updateViewBtn();
+  if (S.view === "shares") { loadShares(); return; }
+  if (S.items) render(S.items); else refresh();     // перерисовка без запроса к серверу
+}
+function toggleView(){
+  VIEW = VIEW === "grid" ? "list" : "grid";
+  try { localStorage.setItem("cloud.view", VIEW); } catch (e) {}
+  applyView();
+}
+
+/* сортировка в галерее: тот же SORT, что и у заголовков таблицы */
+function buildSortSel(){
+  const sel = $("sortSel");
+  sel.textContent = "";
+  const opts = [["", "по умолчанию"], ["name:1", "имя ↑"], ["name:-1", "имя ↓"],
+                ["size:1", "размер ↑"], ["size:-1", "размер ↓"],
+                ["mtime:1", "дата ↑"], ["mtime:-1", "дата ↓"]];
+  for (const [v, label] of opts){
+    const o = document.createElement("option");
+    o.value = v; o.textContent = label;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => {
+    if (!sel.value) SORT = null;
+    else { const p = sel.value.split(":"); SORT = { key: p[0], dir: Number(p[1]) }; }
+    saveSort(); setHeaderSort(); refresh();
+  };
+  syncSortSel();
+}
+function syncSortSel(){
+  const sel = $("sortSel");
+  if (sel) sel.value = SORT ? SORT.key + ":" + SORT.dir : "";
 }
 
 async function loadDir(path){
@@ -578,6 +670,7 @@ function uploadFiles(list){
 /* ---------- общие ссылки ---------- */
 function headerBrowse(on){
   $("q").classList.toggle("hidden", !on);
+  $("btnView").classList.toggle("hidden", !on);
   $("btnIndex").classList.toggle("hidden", !on);
   $("btnUpload").classList.toggle("hidden", !on);
   $("btnFolder").classList.toggle("hidden", !on);
@@ -611,6 +704,9 @@ async function loadShares(){
   S.view = "shares"; S.search = null; S.cur = "";
   $("q").value = "";
   headerBrowse(false);
+  $("grid").classList.add("hidden");
+  $("grid").textContent = "";
+  $("sortBar").classList.add("hidden");
   setNote("");
   setDateCol("Создана", "Сортировать по дате создания ссылки");
   $("tbl").classList.add("hidden");
@@ -946,6 +1042,9 @@ $("q").onkeydown = e => { if (e.key === "Enter") runSearch(); };
 for (const th of document.querySelectorAll("#tbl thead th.sortable"))
   th.onclick = () => clickSort(th.dataset.sort);
 setHeaderSort();
+buildSortSel();
+updateViewBtn();
+$("btnView").onclick = toggleView;
 $("btnUpload").onclick = () => $("fileInput").click();
 $("fileInput").onchange = () => { uploadFiles($("fileInput").files); $("fileInput").value = ""; };
 $("btnFolder").onclick = async () => {

@@ -55,8 +55,10 @@
     tr > td:nth-child(4){grid-area:acts}
     .acts{gap:4px;flex-wrap:wrap;justify-content:flex-end}
     tbody tr:hover{background:#fff}
+    header{flex-wrap:wrap}
   }
 </style>
+<link rel="stylesheet" href="/static/gallery.css">
 </head>
 <body>
 
@@ -70,6 +72,7 @@
     <div class="brand">☁️ Облако</div>
     <span class="tag">общий доступ</span>
     <div class="crumbs" id="crumbs"></div>
+    <button id="btnView" title="Вид: список / галерея">⬚ Галерея</button>
     <button id="btnZip" title="Скачать эту папку zip-архивом">⬇ Папка</button>
   </header>
   <main>
@@ -77,10 +80,12 @@
       <thead><tr><th>Имя</th><th class="num">Размер</th><th class="num">Изменён</th><th style="width:180px"></th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
+    <div id="grid" class="gal hidden"></div>
     <div id="empty" class="empty hidden">Папка пуста</div>
   </main>
 </div>
 
+<script src="/static/gallery.js"></script>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -149,17 +154,59 @@ function renderCrumbs(rootName, p){
   }
 }
 
+/* вид: список или галерея (запоминается в браузере) */
+let VIEW = "list";
+try { if (localStorage.getItem("cloud.view") === "grid") VIEW = "grid"; } catch (e) {}
+let ITEMS = [];
+
+function thumbUrl(rel){ return "/api/s/" + TOKEN + "/thumb?p=" + encodeURIComponent(rel) + "&w=240"; }
+function textUrl(rel){ return "/api/s/" + TOKEN + "/text?p=" + encodeURIComponent(rel); }
+function filesHere(){ return ITEMS.filter(x => x.type !== "dir"); }
+function viewOpts(extra){
+  return Object.assign({
+    fileUrl: apiUrl, dlUrl: dlUrl, thumbUrl: thumbUrl, textUrl: textUrl,
+    iconOf: iconOf, fmtSize: fmtSize, fmtDate: fmtDate,
+    onOpen: it => { if (it.type === "dir") location.href = openUrl(it.rel); else openViewer(it); }
+  }, extra || {});
+}
+function openViewer(item){
+  const files = filesHere();
+  const i = files.findIndex(f => f.rel === item.rel);
+  if (i < 0) { window.open(apiUrl(item.rel), "_blank"); return; }
+  Gal.open(files, i, viewOpts());
+}
+function setView(on){
+  const grid = on === undefined ? VIEW !== "grid" : !!on;
+  VIEW = grid ? "grid" : "list";
+  try { localStorage.setItem("cloud.view", VIEW); } catch (e) {}
+  $("btnView").textContent = grid ? "☰ Список" : "⬚ Галерея";
+  $("btnView").title = grid ? "Показать списком" : "Показать галереей";
+  render(ITEMS, $("crumbs")._root || "");
+}
+
 function render(items, rootName){
+  ITEMS = items;
   renderCrumbs(rootName, P);
+  $("crumbs")._root = rootName;
   const rows = $("rows");
   rows.textContent = "";
-  const empty = $("empty"), tbl = $("tbl");
+  const empty = $("empty"), tbl = $("tbl"), grid = $("grid");
+  const isGrid = VIEW === "grid";
   if (!items.length) {
     tbl.classList.add("hidden");
+    grid.classList.add("hidden");
     empty.classList.remove("hidden");
     return;
   }
   empty.classList.add("hidden");
+  if (isGrid) {
+    tbl.classList.add("hidden");
+    grid.classList.remove("hidden");
+    Gal.grid(grid, items, viewOpts());
+    return;
+  }
+  grid.classList.add("hidden");
+  grid.textContent = "";
   tbl.classList.remove("hidden");
   for (const it of items) {
     const tr = document.createElement("tr");
@@ -170,7 +217,16 @@ function render(items, rootName){
     a.appendChild(Object.assign(document.createElement("span"), { className: "ic", textContent: iconOf(it.name, it.type === "dir") }));
     a.appendChild(Object.assign(document.createElement("span"), { textContent: it.name }));
     if (it.type === "dir") a.href = openUrl(it.rel);
-    else { a.href = apiUrl(it.rel); a.target = "_blank"; a.rel = "noopener"; }
+    else {
+      a.href = apiUrl(it.rel);
+      a.target = "_blank"; a.rel = "noopener";
+      a.title = it.name + " — открыть просмотр";
+      a.onclick = e => {
+        if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+        e.preventDefault();
+        openViewer(it);
+      };
+    }
     tdName.appendChild(a);
     tr.appendChild(tdName);
 
@@ -210,6 +266,9 @@ async function load(){
     }
     const data = await r.json();
     $("app").classList.remove("hidden");
+    $("btnView").textContent = VIEW === "grid" ? "☰ Список" : "⬚ Галерея";
+    $("btnView").title = VIEW === "grid" ? "Показать списком" : "Показать галереей";
+    $("btnView").onclick = () => setView();
     $("btnZip").onclick = () => location.href = dlUrl(P);
     render(data.items, data.name);
   } catch (e) { showGone(); }
