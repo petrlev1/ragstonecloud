@@ -385,8 +385,8 @@ def search(q: str, scope_rel: str = "", limit: int = 300) -> list[dict]:
                (name ILIKE %s) AS name_hit,
                ts_rank(tsv, plainto_tsquery('russian', %s)) AS rank
         FROM files
-        WHERE (content IS NOT NULL AND tsv @@ plainto_tsquery('russian', %s))
-           OR name ILIKE %s
+        WHERE ((content IS NOT NULL AND tsv @@ plainto_tsquery('russian', %s))
+               OR name ILIKE %s)
     """
     params = [like, q, q, like]
     if scope_rel:
