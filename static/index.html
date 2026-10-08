@@ -89,6 +89,24 @@
   .no-links{color:var(--muted);font-size:13px;padding:6px 0}
   .mini{color:var(--muted);font-size:11px}
 
+  /* проверка дисков (SMART) */
+  #dlgSmart>div{padding:16px;max-width:880px}
+  #dlgSmart h3{margin:0 0 4px}
+  #dlgSmart .note{color:var(--muted);font-size:12px;margin:0 0 10px}
+  #smartBox{max-height:60vh;overflow:auto}
+  #smartBox table{border:none;background:transparent}
+  #smartBox tr{display:table-row;background:transparent;border:none;padding:0;margin:0}
+  #smartBox th,#smartBox td{display:table-cell;text-align:left;padding:7px 10px;font-size:13px;border-bottom:1px solid #eceff2;vertical-align:top}
+  #smartBox th{font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:#57606a;background:#f2f4f7}
+  #smartBox .dev{font:12px ui-monospace,Consolas,"Courier New",monospace;white-space:nowrap}
+  #smartBox .dim{color:var(--muted);font-size:12px}
+  #smartBox .prb{color:#bf8700;font-size:12px;margin-top:3px}
+  #smartBox .cloud{font-weight:600}
+  #smartBox .sh-ok{color:#1a7f37;font-weight:600}
+  #smartBox .sh-bad{color:var(--danger);font-weight:600}
+  #smartBox .sh-warn{color:#bf8700;font-weight:600}
+  #smartBox button{padding:3px 8px;font-size:12px}
+
   /* строка состояния удаления: прогресс + отмена */
   #delBar{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:55;
           width:min(720px,calc(100vw - 24px));background:#fff;border:1px solid var(--border);
@@ -173,6 +191,7 @@
     <button id="btnUpload" title="Загрузить файлы в текущую папку">⬆ Загрузить</button>
     <button id="btnFolder">＋ Папка</button>
     <button id="btnShares" title="Все общие ссылки">🔗 Ссылки</button>
+    <button id="btnSmart" title="Проверка здоровья дисков сервера (SMART)">🩺 Диски</button>
     <button id="btnLogout">Выход</button>
   </header>
   <main>
@@ -215,6 +234,18 @@
     <div class="dlg-btns">
       <button type="button" id="dlgShareAdd" class="primary">＋ Новая ссылка</button>
       <button type="button" id="dlgShareClose">Закрыть</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dlgSmart">
+  <div>
+    <h3>🩺 Проверка дисков</h3>
+    <p class="note" id="dlgSmartNote"></p>
+    <div id="smartBox"></div>
+    <div class="dlg-btns">
+      <button type="button" id="dlgSmartRefresh">⟳ Обновить</button>
+      <button type="button" id="dlgSmartClose">Закрыть</button>
     </div>
   </div>
 </dialog>
@@ -1168,6 +1199,144 @@ async function init(){
   } catch (e) { showLogin(); }
 }
 
+/* ---------- проверка дисков сервера (SMART) ---------- */
+let SMART_TIMER = null, SMART_RUNNING = false;
+
+function mkEl(tag, text, cls){
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function smartNum(v){ return v == null ? "—" : v; }
+function smartBadge(d){
+  const h = d.health || "UNKNOWN";
+  const cls = h === "PASSED" ? "sh-ok" : (h === "FAILED" ? "sh-bad" : "sh-warn");
+  const ic  = h === "PASSED" ? "✔" : (h === "FAILED" ? "✖" : "?");
+  return mkEl("span", ic + " " + h, cls);
+}
+function smartDiskCell(d){
+  const td = document.createElement("td");
+  if (d.cloud && d.cloud.length) td.appendChild(mkEl("div", d.cloud.join(", "), "cloud"));
+  td.appendChild(mkEl("div",
+    [d.dev, d.kind, d.size ? fmtSize(d.size) : null].filter(Boolean).join(" · "), "dev"));
+  if (d.mounts && d.mounts.length) td.appendChild(mkEl("div", d.mounts.join("   "), "dim"));
+  return td;
+}
+function smartModelCell(d){
+  const td = document.createElement("td");
+  td.appendChild(mkEl("div", d.model || "—"));
+  if (d.serial) td.appendChild(mkEl("div", "S/N " + d.serial, "dim"));
+  return td;
+}
+function smartStateCell(d){
+  const td = document.createElement("td");
+  td.appendChild(smartBadge(d));
+  if (d.temp != null) td.appendChild(mkEl("div", d.temp + " °C", "dim"));
+  for (const p of (d.problems || [])) td.appendChild(mkEl("div", "⚠ " + p, "prb"));
+  if (d.error) td.appendChild(mkEl("div", "⚠ " + d.error, "prb"));
+  return td;
+}
+function smartStatsCell(d){
+  const td = document.createElement("td");
+  const bits = [];
+  if (d.hours != null) bits.push(smartNum(d.hours) + " ч");
+  if (d.cycles != null) bits.push("пусков " + d.cycles);
+  td.appendChild(mkEl("div", bits.join(" · ") || "—", "dim"));
+  if (d.ata){
+    const a = d.ata;
+    td.appendChild(mkEl("div", "переназн. " + smartNum(a.reallocated) +
+      " · ожид. " + smartNum(a.pending) + " · неиспр. " + smartNum(a.uncorrectable), "dim"));
+  }
+  if (d.nvme){
+    const n = d.nvme;
+    td.appendChild(mkEl("div", "износ " + smartNum(n.percentage_used) + "% · spare " +
+      smartNum(n.available_spare) + "% · media " + smartNum(n.media_errors), "dim"));
+  }
+  return td;
+}
+function smartTestCell(d){
+  const td = document.createElement("td");
+  const st = d.selftest || {};
+  if (st.running){
+    const left = st.remaining != null ? " (" + Math.max(0, Math.round(st.remaining)) + " %)" : "";
+    td.appendChild(mkEl("div", "идёт тест…" + left, "sh-warn"));
+    td.appendChild(mkEl("div", "короткий тест — около 2 минут", "dim"));
+    return td;
+  }
+  td.appendChild(mkEl("div", st.text || "тестов ещё не было", "dim"));
+  if (st.hours != null) td.appendChild(mkEl("div", "при наработке " + st.hours + " ч", "dim"));
+  const btn = document.createElement("button");
+  btn.textContent = "Короткий тест";
+  btn.title = "Проверить поверхность диска: только чтение, безопасно, ~2 минуты";
+  btn.disabled = !!d.error;
+  btn.onclick = () => startSmartTest(d.dev);
+  td.appendChild(btn);
+  return td;
+}
+function drawSmart(data){
+  const box = $("smartBox");
+  box.textContent = "";
+  const list = data.disks || [];
+  SMART_RUNNING = list.some(d => (d.selftest || {}).running);
+  const warn = list.filter(d => (d.problems || []).length).length;
+  $("dlgSmartNote").textContent = "Сервер " + (data.host || "?") +
+    " · проверено " + (data.time || "—") + " · дисков: " + list.length +
+    (warn ? " · замечания: " + warn : " · замечаний нет") +
+    (SMART_RUNNING ? " · идёт self-test" : "");
+  if (!list.length){ box.appendChild(mkEl("div", "Физических дисков не найдено", "no-links")); return; }
+  const tbl = document.createElement("table");
+  const thead = document.createElement("thead"), hrow = document.createElement("tr");
+  for (const h of ["Диск", "Модель", "Состояние", "Наработка", "Последний тест"])
+    hrow.appendChild(mkEl("th", h));
+  thead.appendChild(hrow); tbl.appendChild(thead);
+  const tb = document.createElement("tbody");
+  for (const d of list){
+    const tr = document.createElement("tr");
+    tr.appendChild(smartDiskCell(d));
+    tr.appendChild(smartModelCell(d));
+    tr.appendChild(smartStateCell(d));
+    tr.appendChild(smartStatsCell(d));
+    tr.appendChild(smartTestCell(d));
+    tb.appendChild(tr);
+  }
+  tbl.appendChild(tb);
+  box.appendChild(tbl);
+}
+function smartFail(msg){
+  const box = $("smartBox");
+  box.textContent = "";
+  $("dlgSmartNote").textContent = "";
+  box.appendChild(mkEl("div", msg || "Не удалось получить данные о дисках", "no-links"));
+}
+async function loadSmart(){
+  const box = $("smartBox");
+  if (!box.childElementCount) $("dlgSmartNote").textContent = "Опрашиваю диски (SMART)…";
+  try {
+    const data = await api("/api/smart");
+    if (!data.ok){ smartFail(data.error); stopSmartPoll(); return; }
+    drawSmart(data);
+  } catch (e){ smartFail(e.message); stopSmartPoll(); }
+}
+function stopSmartPoll(){ if (SMART_TIMER){ clearInterval(SMART_TIMER); SMART_TIMER = null; } }
+function startSmartPoll(){
+  stopSmartPoll();
+  SMART_TIMER = setInterval(async () => {
+    await loadSmart();
+    if (!SMART_RUNNING){ stopSmartPoll(); toast("Self-test диска завершён — результат обновлён"); }
+  }, 15000);
+}
+async function startSmartTest(dev){
+  if (!confirm("Запустить короткий self-test диска " + dev + "?\n\nЭто безопасно (только чтение поверхности), займёт около 2 минут.")) return;
+  try {
+    const r = await post("/api/smart/test", { dev });
+    if (!r.ok){ toast(r.error || "Не удалось запустить тест", true); return; }
+    toast("Тест запущен — результат подтянется автоматически");
+    await loadSmart();
+    startSmartPoll();
+  } catch (e){ toast(e.message, true); }
+}
+
 /* ---------- события ---------- */
 $("loginForm").onsubmit = async e => {
   e.preventDefault();
@@ -1200,6 +1369,16 @@ $("btnShares").onclick = () => {
   if (S.view === "shares") loadDir("");
   else loadShares();
 };
+// проверка дисков сервера (SMART): диалог + короткий self-test по кнопке
+$("btnSmart").onclick = () => {
+  if ($("dlgSmart").open) return;
+  $("smartBox").textContent = "";
+  $("dlgSmart").showModal();
+  loadSmart();
+};
+$("dlgSmartRefresh").onclick = () => loadSmart();
+$("dlgSmartClose").onclick = () => $("dlgSmart").close();
+$("dlgSmart").addEventListener("close", stopSmartPoll);
 // индекс: кнопка обновления + ожидание завершения
 $("btnIndex").onclick = async () => {
   try {
