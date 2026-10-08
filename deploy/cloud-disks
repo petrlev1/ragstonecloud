@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+"""Проверка здоровья дисков для «Облака» (SMART).
+
+Запускается приложением облака через sudo. Единственная точка входа: в sudoers
+разрешён ровно этот файл (NOPASSWD), а не сам smartctl — значит подсунуть
+произвольную команду через веб-интерфейс нельзя. Аргументы проверяются строго,
+устройство обязано быть физическим диском ЭТОЙ машины.
+
+  cloud-disks                 — сводка SMART по всем физическим дискам (JSON)
+  cloud-disks --test /dev/sdX — запустить короткий self-test
+
+Вывод — JSON в stdout; код возврата 0 — ок, 1 — ошибка (JSON в stdout всё равно есть).
+"""
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+from datetime import datetime
+
+SMARTCTL = "/usr/sbin/smartctl"
+FALLBACK_SMARTCTL = "smartctl"
+TIMEOUT = 40
+# псевдо-устройства, которым SMART не задаёшь
+SKIP = re.compile(r"^(loop|ram|zram|sr|fd|dm-|md|nbd|mmcblk\d+r)")
+
+# пороги «есть замечания»
+TEMP_WARN = 50          # °C
+USED_WARN = 80          # % износа NVMe
+
+
+def _run(cmd, timeout=TIMEOUT):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout or "", p.stderr or ""
+    except FileNotFoundError:
+        return 127, "", f"{cmd[0]}: не найден"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{cmd[0]}: не ответил за {timeout} с"
+    except Exception as e:                                    # noqa: BLE001
+        return 1, "", f"{type(e).__name__}: {e}"
+
+
+def _smartctl():
+    return SMARTCTL if os.path.exists(SMARTCTL) else FALLBACK_SMARTCTL
+
+
+def physical():
+    """Физические диски машины: [{dev, model, serial, size, kind, mounts}]."""
+    rc, out, err = _run(["lsblk", "-J", "-b", "-o",
+                         "NAME,SIZE,TYPE,MODEL,SERIAL,ROTA,MOUNTPOINT"], timeout=15)
+    if rc != 0:
+        raise RuntimeError(f"lsblk не сработал: {err.strip() or rc}")
+    try:
+        tree = json.loads(out).get("blockdevices") or []
+    except ValueError as e:
+        raise RuntimeError(f"lsblk: не разобрал вывод ({e})")
+
+    def mounts_of(node, acc):
+        if node.get("mountpoint"):
+            acc.append(node["mountpoint"])
+        for ch in node.get("children") or []:
+            mounts_of(ch, acc)
+
+    res = []
+    for d in tree:
+        name = (d.get("name") or "").strip()
+        if (d.get("type") or "") != "disk" or not name or SKIP.match(name):
+            continue
+        mounts = []
+        mounts_of(d, mounts)
+        kind = "HDD" if d.get("rota") else ("NVMe" if name.startswith("nvme") else "SSD")
+        res.append({
+            "dev": "/dev/" + name,
+            "model": (d.get("model") or "").strip() or None,
+            "serial": (d.get("serial") or "").strip() or None,
+            "size": d.get("size"),
+            "kind": kind,
+            "mounts": mounts,
+        })
+    return res
+
+
+def _attrs(js):
+    return {a.get("id"): a for a in
+            ((js.get("ata_smart_attributes") or {}).get("table") or [])}
+
+
+def _raw(attr):
+    try:
+        v = ((attr or {}).get("raw") or {}).get("value")
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _selftest_text(dev):
+    """Фолбэк: последняя строка журнала self-test простым текстом."""
+    rc, out, _ = _run([_smartctl(), "-l", "selftest", dev], timeout=15)
+    if rc not in (0, 1, 2, 4, 8) and not out:
+        return None
+    for line in out.splitlines():
+        s = line.strip()
+        if not s or s.startswith(("Num", "===", "SMART", "#", "Self-test")):
+            continue
+        m = re.match(r"^#?\s*\d+\s+(.+)$", s)
+        if m:
+            return m.group(1).strip()
+    # «тестов ещё не было» — это отсутствие результата, а не результат:
+    # в интерфейсе покажем «тестов ещё не было» и кнопку запуска.
+    return None
+
+
+def _selftest_from_json(js):
+    """Последняя запись self-test из JSON. ATA и NVMe отдают её по-разному."""
+    # ATA (SATA): ata_smart_self_test_log.standard.table[0].status.{string,passed,remaining_percent}
+    log = js.get("ata_smart_self_test_log") or {}
+    table = (log.get("standard") or {}).get("table")
+    if table:
+        last = table[0] if isinstance(table[0], dict) else {}
+        status = last.get("status") if isinstance(last.get("status"), dict) else {}
+        text = status.get("string")
+        rem = status.get("remaining_percent")
+        return {
+            "text": text,
+            "type": (last.get("type") or {}).get("string") if isinstance(last.get("type"), dict) else None,
+            "hours": last.get("lifetime_hours"),
+            "remaining": rem,
+            "running": "in progress" in (text or "").lower() or bool(rem),
+            "ok": status.get("passed"),
+        }
+    # NVMe: nvme_self_test_log.table[0].self_test_result.{value,string} + current_self_test_operation
+    for key in ("nvme_self_test_log", "nvme_selftest_log"):
+        node = js.get(key)
+        if not isinstance(node, dict) or not node.get("table"):
+            continue
+        row = node["table"][0] if isinstance(node["table"][0], dict) else {}
+        res = row.get("self_test_result") if isinstance(row.get("self_test_result"), dict) else {}
+        code = row.get("self_test_code") if isinstance(row.get("self_test_code"), dict) else {}
+        cur = node.get("current_self_test_operation") if isinstance(node.get("current_self_test_operation"), dict) else {}
+        return {
+            "text": res.get("string"),
+            "type": code.get("string"),
+            "hours": row.get("power_on_hours"),
+            "remaining": None,
+            "running": bool(cur.get("value")),
+            "ok": (res.get("value") == 0) if res.get("value") is not None else None,
+        }
+    return None
+
+
+def read_disk(d):
+    """Сводка SMART по одному диску."""
+    dev = d["dev"]
+    rec = dict(d)
+    rec.update(health="UNKNOWN", temp=None, hours=None, cycles=None, ata=None,
+               nvme=None, selftest=None, problems=[], error=None)
+
+    rc, out, err = _run([_smartctl(), "-j", "-i", "-H", "-A", "-l", "selftest", dev])
+    js = None
+    try:
+        js = json.loads(out) if out.strip().startswith("{") else None
+    except ValueError:
+        js = None
+    if js is None:
+        rec["error"] = (err.strip().splitlines() or ["SMART недоступен"])[-1]
+        return rec
+
+    msgs = [m.get("string") for m in ((js.get("smartctl") or {}).get("messages") or [])
+            if isinstance(m, dict) and m.get("string")]
+    rec["model"] = js.get("model_name") or js.get("model_number") or rec["model"]
+    rec["serial"] = js.get("serial_number") or rec["serial"]
+    if js.get("rotation_rate"):
+        rec["kind"] = "HDD" if js["rotation_rate"] > 0 else rec["kind"]
+
+    health = (js.get("smart_status") or {}).get("passed")
+    rec["health"] = "PASSED" if health is True else ("FAILED" if health is False else "UNKNOWN")
+    rec["temp"] = (js.get("temperature") or {}).get("current")
+    rec["hours"] = (js.get("power_on_time") or {}).get("hours")
+    rec["cycles"] = js.get("power_cycle_count")
+
+    # ATA-атрибуты (SATA-диски)
+    a = _attrs(js)
+    if a:
+        rec["ata"] = {
+            "reallocated": _raw(a.get(5)),
+            "pending": _raw(a.get(197)),
+            "uncorrectable": _raw(a.get(198)),
+            "reported_uncorrect": _raw(a.get(187)),
+            "command_timeout": _raw(a.get(188)),
+            "spin_retry": _raw(a.get(10)),
+            "crc": _raw(a.get(199)),
+            "seek_error": _raw(a.get(7)),
+        }
+
+    # NVMe-здоровье
+    nvme = js.get("nvme_smart_health_information_log")
+    if isinstance(nvme, dict):
+        rec["nvme"] = {
+            "critical_warning": nvme.get("critical_warning"),
+            "percentage_used": nvme.get("percentage_used"),
+            "available_spare": nvme.get("available_spare"),
+            "media_errors": nvme.get("media_errors"),
+            "unsafe_shutdowns": nvme.get("unsafe_shutdowns"),
+            "data_written": (nvme.get("data_units_written") or 0) * 512000,
+        }
+
+    # журнал self-test: из JSON (ATA/NVMe), иначе — текстом
+    rec["selftest"] = _selftest_from_json(js)
+    if rec["selftest"] is None:
+        text = _selftest_text(dev)
+        if text:
+            rec["selftest"] = {"text": text, "type": None, "hours": None,
+                               "remaining": None, "ok": None,
+                               "running": "in progress" in text.lower()}
+
+    if rec["health"] == "FAILED":
+        rec["problems"].append("SMART: диск помечен как неисправный (FAILED)")
+    if rec["error"] is None and rec["model"] is None and msgs:
+        rec["error"] = "; ".join(msgs)
+    for key, label in (("reallocated", "переназначенные сектора"),
+                       ("pending", "сектора в ожидании"),
+                       ("uncorrectable", "неисправимые сектора"),
+                       ("reported_uncorrect", "ошибки чтения"),
+                       ("command_timeout", "таймауты команд"),
+                       ("spin_retry", "повторы раскрутки")):
+        val = (rec.get("ata") or {}).get(key)
+        if val:
+            rec["problems"].append(f"{label}: {val}")
+    if rec.get("ata") and rec["ata"].get("crc"):
+        rec["problems"].append(f"ошибки интерфейса SATA (CRC): {rec['ata']['crc']}")
+    if rec.get("nvme"):
+        n = rec["nvme"]
+        if n.get("media_errors"):
+            rec["problems"].append(f"ошибки целостности данных (media): {n['media_errors']}")
+        if n.get("critical_warning"):
+            rec["problems"].append(f"critical warning: {n['critical_warning']}")
+        if (n.get("percentage_used") or 0) >= USED_WARN:
+            rec["problems"].append(f"износ {n['percentage_used']}%")
+    if rec.get("temp") is not None and rec["temp"] >= TEMP_WARN:
+        rec["problems"].append(f"температура {rec['temp']} °C")
+    st = rec.get("selftest") or {}
+    if (st.get("text") and not st.get("running") and st.get("ok") is not True
+            and "without error" not in st["text"].lower()):
+        rec["problems"].append(f"self-test: {st['text']}")
+    return rec
+
+
+def start_test(dev, known):
+    if dev not in known:
+        return {"ok": False,
+                "error": f"{dev} — не диск этой машины (доступны: {', '.join(known) or '—'})"}
+    rc, out, err = _run([_smartctl(), "-t", "short", dev], timeout=20)
+    begun = "self-test has begun" in out.lower() or "testing has begun" in out.lower()
+    if begun or rc == 0:
+        return {"ok": True, "dev": dev,
+                "message": "Короткий self-test запущен — результат через ~2 минуты"}
+    return {"ok": False, "error": (err.strip().splitlines() or ["не удалось запустить тест"])[-1]}
+
+
+def main(argv):
+    try:
+        disks = physical()
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}, 1
+
+    if len(argv) > 1:
+        if len(argv) == 3 and argv[1] == "--test":
+            res = start_test(argv[2], [d["dev"] for d in disks])
+            return res, (0 if res.get("ok") else 1)
+        return {"ok": False, "error": "Использование: cloud-disks [--test /dev/DISK]"}, 1
+
+    ver = _run([_smartctl(), "--version"], timeout=10)[1].splitlines()
+    out = {
+        "ok": True,
+        "host": socket.gethostname(),
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "smartctl": (ver[0].split()[1] if ver and len(ver[0].split()) > 1 else None),
+        "disks": [read_disk(d) for d in disks],
+    }
+    return out, 0
+
+
+if __name__ == "__main__":
+    payload, code = main(sys.argv)
+    print(json.dumps(payload, ensure_ascii=False, indent=1))
+    sys.exit(code)
