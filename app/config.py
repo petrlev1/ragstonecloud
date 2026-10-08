@@ -14,6 +14,9 @@ DEFAULTS = {
     "password": None,                          # {"salt", "hash", "iterations"} — PBKDF2
     "rg": os.path.join(os.path.expanduser("~"), "bin", "rg"),  # путь к ripgrep
     "search_timeout": 240,              # лимит поиска по содержимому, секунд
+    # проверка дисков (SMART): команда root-хелпера; в sudoers ему разрешён
+    # ровно этот путь (NOPASSWD). Пусто/нет файла — /api/smart вернёт ошибку.
+    "smart_helper": "sudo -n /usr/local/sbin/cloud-disks",
 }
 
 

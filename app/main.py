@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from app import (auth, config as cfg_mod, deleter, disks, indexer, preview,
-                 shares, storage)
+                 shares, smart, storage)
 
 cfg = cfg_mod.load()
 storage.ROOT = cfg["root"]
@@ -38,6 +38,8 @@ indexer.init(cfg)
 shares.init(cfg)
 # «диски» для шапки UI (config.json "disks"): имена + место/тип носителя
 disks.init(cfg)
+# проверка здоровья дисков (SMART) через root-хелпер (config.json "smart_helper")
+smart.init(cfg)
 # миниатюры/предпросмотр: кэш миниатюр вне хранилища (не в git)
 preview.init(cfg)
 
@@ -403,6 +405,24 @@ def api_index_sync(_=Depends(require_auth)):
 @app.get("/api/disks")
 def api_disks(_=Depends(require_auth)):
     return {"disks": disks.stats()}
+
+
+# ---------- проверка дисков (SMART) ----------
+
+class SmartTestBody(BaseModel):
+    dev: str
+
+
+@app.get("/api/smart")
+def api_smart(_=Depends(require_auth)):
+    """Здоровье физических дисков сервера: SMART + последний self-test."""
+    return smart.check()
+
+
+@app.post("/api/smart/test")
+def api_smart_test(body: SmartTestBody, _=Depends(require_auth)):
+    """Короткий self-test диска (прогресс — в /api/smart)."""
+    return smart.start_test(body.dev)
 
 
 # ---------- общие ссылки: управление (владелец) ----------
