@@ -65,17 +65,43 @@ def _call(args=()) -> tuple[dict | None, str | None]:
     return data, None
 
 
-def _cloud_for(disk: dict) -> list[str]:
-    """Какие диски облака лежат на этом физическом диске (сверка по точкам монтирования)."""
-    mounts = [os.path.realpath(m) for m in (disk.get("mounts") or []) if m]
-    names = []
+def _local_mount(path: str) -> str | None:
+    """Точка монтирования пути, если он лежит на ЛОКАЛЬНОМ носителе.
+
+    Сетевые маунты (sshfs к другому серверу, nfs, cifs) не принадлежат ни одному
+    физическому диску этой машины — для них вернём None, чтобы не приписать чужое.
+    """
+    try:
+        proc = subprocess.run(["findmnt", "-no", "SOURCE,FSTYPE,TARGET", "-T", path],
+                              capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None                       # не Linux (например, тест-копия на Windows)
+    parts = (proc.stdout or "").strip().split()
+    if len(parts) < 3:
+        return None
+    source, fstype, target = parts[0], parts[1], parts[-1]
+    if fstype in ("fuse.sshfs", "nfs", "nfs4", "cifs", "smb3", "fuse.rclone"):
+        return None
+    if not (source.startswith("/dev/") or source.startswith("UUID=")):
+        return None
+    return target
+
+
+def _assign_cloud(disks: list[dict]) -> None:
+    """Разложить диски облака по физическим: облачный диск показываем у того диска,
+    на котором лежит его точка монтирования. Сетевые — ни у кого."""
+    for d in disks:
+        d["cloud"] = []
+    by_mount: dict[str, list[str]] = {}
     for c in CLOUD:
-        target = os.path.realpath(c["abs"])
-        for m in mounts:
-            if target == m or target.startswith(m.rstrip(os.sep) + os.sep):
-                names.append(c["name"])
-                break
-    return names
+        mount = _local_mount(c["abs"])
+        if mount:
+            by_mount.setdefault(os.path.realpath(mount), []).append(c["name"])
+    for d in disks:
+        for m in d.get("mounts") or []:
+            for name in by_mount.get(os.path.realpath(m), []):
+                if name not in d["cloud"]:
+                    d["cloud"].append(name)
 
 
 def check() -> dict:
@@ -83,8 +109,7 @@ def check() -> dict:
     data, err = _call()
     if err:
         return {"ok": False, "error": err, "disks": []}
-    for d in data.get("disks") or []:
-        d["cloud"] = _cloud_for(d)
+    _assign_cloud(data.get("disks") or [])
     if data.get("ok") is not False:
         data["ok"] = True
     return data
