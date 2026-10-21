@@ -99,6 +99,7 @@ async def _session_scope(request: Request, call_next):
         claims = auth.parse_token(SECRET, token)
     if claims and claims.get("role") == "user":
         storage.set_prefix(ragusers.prefix_rel(claims["uid"]))
+        ragusers.ensure_dir(claims["uid"])   # папка пользователя есть уже с первого листинга
     try:
         return await call_next(request)
     finally:
