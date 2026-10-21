@@ -26,6 +26,7 @@ CFG: dict = {}
 ROOT = ""
 DB: dict | None = None
 USERS_REL = "data/users"
+RAG_DOCS = ""                       # шаблон папки документов ragstone (если задан — это «Мои файлы»)
 QUOTA = 0
 SSO_SECRET: str | None = None
 SSO_TTL = 120
@@ -38,11 +39,12 @@ def log(*args):
 
 
 def init(cfg: dict) -> None:
-    global CFG, ROOT, DB, USERS_REL, QUOTA, SSO_SECRET, SSO_TTL
+    global CFG, ROOT, DB, USERS_REL, RAG_DOCS, QUOTA, SSO_SECRET, SSO_TTL
     CFG = cfg
     ROOT = cfg["root"]
     DB = cfg.get("rag_db") or None
     USERS_REL = (cfg.get("users_rel") or "data/users").replace("\\", "/").strip("/")
+    RAG_DOCS = (cfg.get("rag_docs_rel") or "").replace("\\", "/").strip("/")
     try:
         QUOTA = int(float(cfg.get("user_quota_gb") or 0) * 1024 ** 3)
     except (TypeError, ValueError):
@@ -136,7 +138,12 @@ def name(uid: int) -> str:
 # ---------- личная папка и место ----------
 
 def prefix_rel(uid: int) -> str:
-    """rel-путь папки пользователя от корня хранилища (напр. data/users/5)."""
+    """rel-путь папки «Мои файлы»: документы ragstone (rag_docs_rel) либо data/users/<uid>."""
+    if RAG_DOCS:
+        try:
+            return RAG_DOCS.format(uid=int(uid)).strip("/")
+        except (KeyError, IndexError, ValueError):
+            log("неверный шаблон rag_docs_rel:", RAG_DOCS)
     return f"{USERS_REL}/{int(uid)}"
 
 

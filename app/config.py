@@ -20,6 +20,9 @@ DEFAULTS = {
     # --- пользователи RAG (ragstone.ru) ---
     "rag_db": None,
     "users_rel": "data/users",
+    # Папка «Мои файлы» пользователя = его документы ragstone (подставляется uid).
+    # Шаблон rel-пути от root; пусто — брать users_rel/<uid> (отдельное хранилище облака).
+    "rag_docs_rel": "",
     "user_quota_gb": 5,
     # логины RAG, которым в облаке доступен весь сервер (как владельцу), напр. ["aquasegmentum"]
     "rag_admin_users": [],
