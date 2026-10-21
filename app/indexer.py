@@ -242,6 +242,107 @@ def count() -> int:
         return 0
 
 
+# ---------- сверка отдельной папки при её открытии ----------
+# Пользователь открыл папку → сравниваем ЕЁ содержимое с индексом по mtime/size и
+# чиним расхождения (файл поправлен через диск Z:, приехал scp/rsync, удалён).
+# Полный обход корня для этого не нужен: он на 71k файлов занимает минуты.
+_DIR_LOCK = threading.Lock()
+_DIR_LAST: dict[str, float] = {}
+_DIR_THROTTLE = 20          # не чаще раза в 20 с на папку
+_DIR_MAX_WORK = 200         # больше изменений — дешевле полная синхронизация
+
+
+def refresh_dir_async(rel: str, throttle: float = _DIR_THROTTLE) -> None:
+    """Запустить сверку одной папки в фоне (не задерживает листинг)."""
+    if not ENABLED:
+        return
+    now = time.time()
+    with _DIR_LOCK:
+        if now - _DIR_LAST.get(rel, 0) < throttle:
+            return
+        _DIR_LAST[rel] = now
+    threading.Thread(target=refresh_dir, args=(rel,), daemon=True).start()
+
+
+def refresh_dir(rel: str) -> dict:
+    """Сверить непосредственное содержимое папки с индексом. Возвращает счётчики."""
+    out = {"checked": 0, "added": 0, "updated": 0, "removed": 0, "deferred": False}
+    if not ENABLED:
+        return out
+    abs_dir = os.path.join(ROOT, rel) if rel else ROOT
+    try:
+        entries = list(os.scandir(abs_dir))
+    except OSError as e:
+        log(f"refresh_dir({rel!r}): не прочитать папку: {e}")
+        return out                       # не читается — ничего не удаляем
+    disk: dict[str, tuple[int, int, bool]] = {}
+    for e in entries:
+        try:
+            if e.is_symlink():
+                continue
+            if e.is_dir():
+                if _is_skipped_dir(e.name):
+                    continue
+                st = e.stat()
+                disk[e.name] = (int(st.st_mtime), st.st_size, True)
+            elif e.is_file():
+                if e.name.startswith(".") and e.name not in INDEX_DOTS:
+                    continue
+                st = e.stat()
+                disk[e.name] = (int(st.st_mtime), st.st_size, False)
+        except OSError:
+            continue
+    out["checked"] = len(disk)
+    prefix = (rel + "/") if rel else ""
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT path, mtime, size, is_dir FROM files "
+                "WHERE path LIKE %s AND strpos(substr(path, %s), '/') = 0",
+                (prefix + "%", len(prefix) + 1)).fetchall()
+            known = {p: (int(m), int(s), bool(d)) for p, m, s, d in rows}
+            disk_paths = {prefix + name for name in disk}
+            to_delete = [p for p in known if p not in disk_paths]
+            work = [name for name, st in disk.items() if known.get(prefix + name) != st]
+            if len(work) > _DIR_MAX_WORK:
+                out["deferred"] = True
+                log(f"refresh_dir({rel!r}): изменений {len(work)} — запускаю полную синхронизацию")
+                sync_start(background=True)
+                return out
+            for p in to_delete:
+                conn.execute("DELETE FROM files WHERE path = %s OR path LIKE %s", (p, p + "/%"))
+            out["removed"] = len(to_delete)
+            for name in work:
+                mtime, size, is_dir = disk[name]
+                full = os.path.join(abs_dir, name)
+                content = None
+                if not is_dir and size <= MAX_FILE:
+                    try:
+                        content = extract_text(full)
+                    except Exception:
+                        content = None
+                conn.execute("SAVEPOINT rd")
+                try:
+                    _upsert(conn, prefix + name, mtime, size, content, is_dir)
+                except Exception as e:
+                    conn.execute("ROLLBACK TO SAVEPOINT rd")
+                    log(f"refresh_dir: пропущен {name!r}: {e}")
+                    continue
+                if prefix + name in known:
+                    out["updated"] += 1
+                else:
+                    out["added"] += 1
+            conn.commit()
+    except Exception:
+        log(f"refresh_dir({rel!r}): ОШИБКА:")
+        traceback.print_exc()
+        return out
+    if out["added"] or out["updated"] or out["removed"]:
+        log(f"refresh_dir({rel!r}): проверено {out['checked']}, "
+            f"добавлено {out['added']}, обновлено {out['updated']}, удалено {out['removed']}")
+    return out
+
+
 def sync_start(background: bool = True) -> bool:
     """Запускает синхронизацию индекса с диском. True, если запущена сейчас."""
     if not ENABLED:

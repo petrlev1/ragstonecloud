@@ -231,11 +231,14 @@ def api_list(path: str = "", who: dict = Depends(identity)):
     d = storage.safe(path)
     if not os.path.isdir(d):
         raise HTTPException(404, "Папка не найдена")
+    rel = storage.rel_of(d)
     # «Мои файлы» открыли — заодно просим RAG сверить папку БЗ с user_documents:
     # правки файлов в обход облака (диск Z:, scp) подхватываются без ручных действий.
-    ragusers.notify_kb(ragusers.uid_of_rel(storage.rel_of(d)), "открытие «Моих файлов»",
-                       throttle=60)
-    return {"path": storage.rel_of(d), "items": storage.list_dir(d, hide_dot=HIDE_DOT)}
+    ragusers.notify_kb(ragusers.uid_of_rel(rel), "открытие «Моих файлов»", throttle=60)
+    # сверка этой папки с поисковым индексом: файлы, изменённые в обход облака,
+    # попадают в поиск без ручного «⟳ Индекс» (в фоне, листинг не задерживается)
+    indexer.refresh_dir_async(rel)
+    return {"path": rel, "items": storage.list_dir(d, hide_dot=HIDE_DOT)}
 
 
 @app.get("/api/file")
