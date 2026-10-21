@@ -219,14 +219,27 @@ def uid_of_rel(rel: str) -> int | None:
     return int(m.group("uid")) if m else None
 
 
-def notify_kb(uid: int | None, reason: str = "") -> None:
+_NOTIFY_LOCK = threading.Lock()
+_NOTIFY_LAST: dict[int, float] = {}
+
+
+def notify_kb(uid: int | None, reason: str = "", throttle: float = 0) -> None:
     """Сообщить RAG, что в папке БЗ пользователя изменились файлы (фоном, без ожидания).
 
-    RAG сверит папку с user_documents и запустит переиндексацию базы знаний.
+    RAG сверит папку с user_documents (новые / пропавшие / изменённые по размеру+mtime)
+    и запустит переиндексацию базы знаний.
+    throttle > 0 — не чаще одного вызова за указанное число секунд на пользователя
+    (для «дёрнуть сверку при открытии папки»).
     Ошибка связи не влияет на операцию пользователя — только пишется в лог.
     """
     if not uid or not RAG_API or not SSO_SECRET:
         return
+    if throttle:
+        now = time.time()
+        with _NOTIFY_LOCK:
+            if now - _NOTIFY_LAST.get(int(uid), 0) < throttle:
+                return
+            _NOTIFY_LAST[int(uid)] = now
 
     def _worker():
         body = json.dumps({"uid": int(uid), "reason": reason},
@@ -238,8 +251,10 @@ def notify_kb(uid: int | None, reason: str = "") -> None:
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 data = json.loads(r.read() or b"{}")
-            log(f"БЗ пользователя #{uid} синхронизирована ({reason}): "
-                f"+{data.get('added', '?')} / -{data.get('removed', '?')}")
+            if data.get("added") or data.get("removed") or data.get("changed"):
+                log(f"БЗ пользователя #{uid} обновлена ({reason}): "
+                    f"+{data.get('added', 0)} / -{data.get('removed', 0)} / "
+                    f"~{data.get('changed', 0)}")
         except Exception as exc:
             log(f"БЗ #{uid} ({reason}) не синхронизирована:", type(exc).__name__, exc)
 

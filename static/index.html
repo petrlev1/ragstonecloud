@@ -821,12 +821,14 @@ function refresh(){
 }
 
 /* ---------- загрузка файлов ---------- */
-function uploadFiles(list){
+/* overwrite=true — подтверждённая замена уже существующих файлов с теми же именами */
+function uploadFiles(list, overwrite){
   if (!list.length || S.search) return;
   const fd = new FormData();
   for (const f of list) fd.append("files", f);
   const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/upload?path=" + encodeURIComponent(S.cur || ""));
+  xhr.open("POST", "/api/upload?path=" + encodeURIComponent(S.cur || "") +
+                  (overwrite ? "&overwrite=1" : ""));
   const bar = $("progBar");
   bar.style.width = "0%";
   xhr.upload.onprogress = e => {
@@ -836,8 +838,17 @@ function uploadFiles(list){
     bar.style.width = "0%";
     if (xhr.status === 401) { showLogin(); return; }
     let data = null; try { data = JSON.parse(xhr.responseText); } catch (e) {}
+    if (xhr.status === 409){
+      // такое имя уже есть: спрашиваем и повторяем с заменой (файл обновится, а не задвоится)
+      const msg = (data && data.error) || "Файл с таким именем уже есть";
+      if (confirm(msg + "\n\nЗаменить существующие файлы?")) uploadFiles(list, true);
+      return;
+    }
     if (xhr.status >= 200 && xhr.status < 300) {
-      toast("Загружено файлов: " + (data && data.uploaded != null ? data.uploaded : list.length));
+      const n = data && data.uploaded != null ? data.uploaded : list.length;
+      const rep = data && data.replaced ? data.replaced : 0;
+      toast(rep ? ("Обновлено файлов: " + rep + (n > rep ? " · добавлено: " + (n - rep) : ""))
+                : ("Загружено файлов: " + n));
       refresh();
     } else toast((data && data.error) || ("Ошибка " + xhr.status), true);
   };

@@ -227,10 +227,14 @@ def index():
 
 
 @app.get("/api/list")
-def api_list(path: str = "", _=Depends(require_auth)):
+def api_list(path: str = "", who: dict = Depends(identity)):
     d = storage.safe(path)
     if not os.path.isdir(d):
         raise HTTPException(404, "Папка не найдена")
+    # «Мои файлы» открыли — заодно просим RAG сверить папку БЗ с user_documents:
+    # правки файлов в обход облака (диск Z:, scp) подхватываются без ручных действий.
+    ragusers.notify_kb(ragusers.uid_of_rel(storage.rel_of(d)), "открытие «Моих файлов»",
+                       throttle=60)
     return {"path": storage.rel_of(d), "items": storage.list_dir(d, hide_dot=HIDE_DOT)}
 
 
@@ -323,8 +327,16 @@ def api_download(path: str, _=Depends(require_auth)):
 
 
 @app.post("/api/upload")
-async def api_upload(path: str = "", files: list[UploadFile] = File(...),
+async def api_upload(path: str = "", overwrite: bool = False,
+                     files: list[UploadFile] = File(...),
                      who: dict = Depends(identity)):
+    """Загрузка файлов. Одинаковое имя = обновление файла (overwrite=1), иначе 409.
+
+    Раньше на совпадение имени создавалась копия «имя (1).ext» — для прайсов и
+    документов базы знаний это давало два разных документа. Теперь UI спрашивает
+    «заменить?» и повторяет запрос с overwrite=1: файл перезаписывается по месту,
+    RAG видит изменение содержимого (размер+mtime) и переиндексирует базу знаний.
+    """
     d = storage.safe(path)
     if not os.path.isdir(d):
         raise HTTPException(404, "Папка не найдена")
@@ -336,18 +348,34 @@ async def api_upload(path: str = "", files: list[UploadFile] = File(...),
         if used + incoming > limit:
             raise HTTPException(413, "Не хватает места: занято " + _size_h(used) +
                                 " из " + _size_h(limit) + " — освободи файлы в облаке")
-    written: list[str] = []
+    # сначала план: какие имена уже заняты (нужно подтверждение замены)
+    plan: list[tuple] = []          # (upload, путь, замена)
+    conflicts: list[str] = []
     for up in files:
         name = os.path.basename((up.filename or "").replace("\\", "/"))
         if not name or name in (".", ".."):
             continue
-        target = os.path.join(d, storage.unique_name(d, name))
+        target = os.path.join(d, name)
         if not storage.is_within(target):
-            continue  # защита от хитрых имён
+            continue                # защита от хитрых имён
+        if os.path.lexists(target):
+            if not overwrite:
+                conflicts.append(name)
+                continue
+            plan.append((up, target, True))
+        else:
+            plan.append((up, os.path.join(d, storage.unique_name(d, name)), False))
+    if conflicts:
+        raise HTTPException(409, "Уже есть файл с таким именем: " + ", ".join(conflicts[:3]) +
+                            (" и др." if len(conflicts) > 3 else "") + " — заменить?")
+    written: list[str] = []
+    replaced = 0
+    for up, target, is_repl in plan:
         with open(target, "wb") as fh:
             while chunk := await up.read(1 << 20):
                 fh.write(chunk)
         written.append(target)
+        replaced += 1 if is_repl else 0
     if limit:                      # фактическая сверка: квота не превышается даже при пакетной заливке
         used = ragusers.usage(uid)
         if used > limit:
@@ -361,9 +389,9 @@ async def api_upload(path: str = "", files: list[UploadFile] = File(...),
     for target in written:
         indexer.index_path(storage.rel_of(target))
     # файлы легли в папку базы знаний ragstone — регистрируем документы и переиндексируем
-    for uid in {ragusers.uid_of_rel(storage.rel_of(t)) for t in written}:
-        ragusers.notify_kb(uid, "загрузка из облака")
-    return {"ok": True, "uploaded": len(written)}
+    for kb_uid in {ragusers.uid_of_rel(storage.rel_of(t)) for t in written}:
+        ragusers.notify_kb(kb_uid, "загрузка из облака" if not replaced else "обновление файла в облаке")
+    return {"ok": True, "uploaded": len(written), "replaced": replaced}
 
 
 @app.post("/api/folder")
