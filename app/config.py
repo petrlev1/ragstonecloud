@@ -17,6 +17,15 @@ DEFAULTS = {
     # проверка дисков (SMART): команда root-хелпера; в sudoers ему разрешён
     # ровно этот путь (NOPASSWD). Пусто/нет файла — /api/smart вернёт ошибку.
     "smart_helper": "sudo -n /usr/local/sbin/cloud-disks",
+    # --- пользователи RAG (ragstone.ru) ---
+    "rag_db": None,
+    "users_rel": "data/users",
+    "user_quota_gb": 5,
+    # логины RAG, которым в облаке доступен весь сервер (как владельцу), напр. ["aquasegmentum"]
+    "rag_admin_users": [],
+    # общий секрет с RAG для перехода «☁️ Мои файлы» (SSO-токен на 1 клик)
+    "sso_secret": None,
+    "sso_ttl": 120,                 # время жизни SSO-токена, секунд
 }
 
 

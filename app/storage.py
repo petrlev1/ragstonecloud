@@ -1,21 +1,63 @@
-"""Безопасная работа с файловой системой: всё строго внутри корня хранилища."""
+"""Безопасная работа с файловой системой: всё строго внутри корня хранилища.
+
+Пользователь RAG работает в своей папке: перед обработкой запроса main.py
+ставит PREFIX (rel-путь его каталога), и safe() дополнительно запрещает
+выход за этот каталог — изоляция не зависит от кнопок в интерфейсе.
+"""
+import contextvars
 import os
 import re
 
 from fastapi import HTTPException
 
 ROOT = ""  # задаётся из config.json при старте
+# границы текущей сессии внутри ROOT (пусто = владелец, доступен весь корень)
+PREFIX = contextvars.ContextVar("cloud_prefix", default="")
+
+
+def set_prefix(rel: str) -> None:
+    PREFIX.set((rel or "").replace("\\", "/").strip("/"))
+
+
+def prefix() -> str:
+    return PREFIX.get()
+
+
+def base(rel: str | None = None) -> str:
+    """Корень текущей сессии: каталог пользователя RAG либо весь ROOT."""
+    pre = prefix() if rel is None else (rel or "").strip("/")
+    return os.path.join(ROOT, *pre.split("/")) if pre else ROOT
 
 
 def safe(rel: str) -> str:
-    """rel-путь -> абсолютный. Запрещает выход за пределы ROOT (в т.ч. через symlink)."""
+    """rel-путь -> абсолютный. Запрещает выход за пределы ROOT (в т.ч. через symlink)
+    и за пределы папки пользователя, если сессия ограничена (PREFIX)."""
+    pre = prefix()
     rel = (rel or "").strip("/")
+    if pre:
+        # принимаем и путь «от корня хранилища» (data/users/5/x), и «от своей папки» (x)
+        if rel == pre:
+            rel = ""
+        elif rel.startswith(pre + "/"):
+            rel = rel[len(pre) + 1:]
+        base_dir = os.path.realpath(base())
+        p = os.path.realpath(os.path.join(base_dir, *rel.split("/"))) if rel else base_dir
+        if p != base_dir and not p.startswith(base_dir.rstrip(os.sep) + os.sep):
+            raise HTTPException(403, "Путь за пределами хранилища")
+        if not is_within(p):
+            raise HTTPException(403, "Путь за пределами хранилища")
+        return p
     if not rel:
         return ROOT
     p = os.path.realpath(os.path.join(ROOT, *rel.split("/")))
     if not is_within(p):
         raise HTTPException(403, "Путь за пределами хранилища")
     return p
+
+
+def is_root(abs_path: str) -> bool:
+    """Это корень текущей сессии? Удалять его нельзя ни владельцу, ни пользователю."""
+    return os.path.realpath(abs_path) == os.path.realpath(base())
 
 
 def is_within(abs_path: str) -> bool:
