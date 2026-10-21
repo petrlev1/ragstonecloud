@@ -170,7 +170,7 @@
 
 <div id="login" class="hidden">
   <h1>☁️ Облако</h1>
-  <p>Вход по логину и паролю</p>
+  <p>Логин и пароль: от ragstone.ru или владельца облака</p>
   <form id="loginForm">
     <input type="text" id="user" placeholder="Логин" autofocus autocomplete="username">
     <input type="password" id="pw" placeholder="Пароль" autocomplete="current-password">
@@ -272,8 +272,11 @@ const S = { cur: "", search: null, busy: false, view: "browse", items: null };
 let VIEW = "list";
 try { if (localStorage.getItem("cloud.view") === "grid") VIEW = "grid"; } catch (e) {}
 /* «диски» приходят с сервера: GET /api/disks (список из config.json + место и тип носителя).
-   Элемент: {rel, name, type, total, used, free}; rel — виртуальный корень в хранилище. */
+   Элемент: {rel, name, type, total, used, free}; rel — виртуальный корень в хранилище.
+   Пользователь RAG получает один «диск» — свою папку с квотой (quota: true). */
 let DISKS = [{ rel: "", name: "Облако" }];
+/* кто вошёл: admin — владелец сервера (диски, SMART, проводник), иначе пользователь RAG */
+let ME = { admin: true, user: "", quota: null };
 function diskOf(rel){
   rel = rel || "";
   let best = null;                 // самый длинный подходящий префикс (диски могут быть вложены)
@@ -290,8 +293,13 @@ function diskBrief(d){
 }
 function renderDiskInfo(d){
   const el = $("diskInfo");
+  if (d.quota && d.total){            // папка пользователя RAG: квота вместо места на диске
+    el.textContent = `занято ${fmtSize(d.used)} из ${fmtSize(d.total)}` +
+                     (d.free != null ? ` · свободно ${fmtSize(d.free)}` : "");
+    return;
+  }
   el.textContent = d.total
-    ? `${d.type || ""} · занято ${fmtSize(d.used)} из ${fmtSize(d.total)} · свободно ${fmtSize(d.free)}`
+    ? `${d.type ? d.type + " · " : ""}занято ${fmtSize(d.used)} из ${fmtSize(d.total)} · свободно ${fmtSize(d.free)}`
     : (diskBrief(d) || "нет данных");
 }
 function humanRel(rel){
@@ -624,11 +632,13 @@ function makeRow(item, inSearch){
     acts.appendChild(b);
     return b;
   };
-  const exp = document.createElement("a");
-  exp.textContent = "📂";
-  exp.title = "Показать в проводнике Windows (диск Z:)";
-  exp.href = "cloudopen:" + item.rel.split("/").map(encodeURIComponent).join("/");
-  acts.appendChild(exp);
+  if (ME.admin !== false){          // «показать в проводнике Windows» — функция владельца ПК
+    const exp = document.createElement("a");
+    exp.textContent = "📂";
+    exp.title = "Показать в проводнике Windows (диск Z:)";
+    exp.href = "cloudopen:" + item.rel.split("/").map(encodeURIComponent).join("/");
+    acts.appendChild(exp);
+  }
   if (inSearch) {
     const up = btn("📁 В папку", null, e => openParent(item, !!(e && (e.ctrlKey || e.metaKey))));
     up.title = "Открыть папку с этим файлом в новой вкладке — результаты поиска здесь сохранятся "
@@ -839,7 +849,8 @@ function uploadFiles(list){
 function headerBrowse(on){
   $("q").classList.toggle("hidden", !on);
   $("btnView").classList.toggle("hidden", !on);
-  $("btnIndex").classList.toggle("hidden", !on);
+  /* «⟳ Индекс» — кнопка владельца: у пользователя RAG остаётся скрытой */
+  $("btnIndex").classList.toggle("hidden", !on || ME.admin === false);
   $("btnUpload").classList.toggle("hidden", !on);
   $("btnFolder").classList.toggle("hidden", !on);
 }
@@ -861,11 +872,26 @@ function buildDiskSel(){
     o.textContent = d.name + (diskBrief(d) ? " — " + diskBrief(d) : "");
     sel.appendChild(o);
   }
+  /* у пользователя RAG диск один (его папка) — селектор не нужен */
+  sel.classList.toggle("hidden", DISKS.length < 2);
   sel.onchange = () => {
     if (S.busy){ sel.value = diskOf(S.cur).rel; return; }
     loadDir(sel.value);
   };
   renderDiskInfo(diskOf(S.cur));
+}
+/* корень хранилища для текущей роли: у пользователя RAG — его папка */
+function rootPath(){
+  return (DISKS[0] && DISKS[0].rel) || "";
+}
+/* интерфейс под роль: админ-функции (SMART, индекс, проводник) — только владельцу */
+function applyRole(){
+  const admin = ME.admin !== false;
+  $("btnSmart").classList.toggle("hidden", !admin);
+  $("btnIndex").classList.toggle("hidden", !admin);
+  const brand = document.querySelector(".brand");
+  if (brand) brand.textContent = admin ? "☁️ Облако" : "☁️ Мои файлы";
+  $("btnLogout").title = admin ? "Выход" : ("Выход — " + (ME.user || ""));
 }
 
 async function loadShares(){
@@ -1184,19 +1210,28 @@ function showApp(){
 }
 async function init(){
   try {
-    await api("/api/me");
-    showApp();
-    await loadDisks();
-    const st = urlState();
-    HIT = normRel(st.hit) || null;      // файл для подсветки (из «В папку» в новой вкладке)
-    if (st.q){                          // в адресе поиск — сразу показываем результаты
-      S.cur = st.path;
-      if (!(await runSearch(st.q, "replace"))) await loadDir(st.path, "replace");
-    } else if (!(await loadDir(st.path, "replace")) && st.path){
-      await loadDir("", "replace");      // папки нет/устарела ссылка — открываем корень
-    }
-    delResume();
-  } catch (e) { showLogin(); }
+    await boot();
+  } catch (e) {
+    showLogin();
+    if (new URLSearchParams(location.search).get("sso") === "fail")
+      $("loginErr").textContent = "Ссылка из кабинета устарела — войди логином и паролем";
+  }
+}
+/* загрузка сессии: роль (владелец/пользователь RAG), диски и текущая папка */
+async function boot(){
+  ME = await api("/api/me");
+  showApp();
+  applyRole();
+  await loadDisks();
+  const st = urlState();
+  HIT = normRel(st.hit) || null;      // файл для подсветки (из «В папку» в новой вкладке)
+  if (st.q){                          // в адресе поиск — сразу показываем результаты
+    S.cur = st.path;
+    if (!(await runSearch(st.q, "replace"))) await loadDir(st.path || rootPath(), "replace");
+  } else if (!(await loadDir(st.path || rootPath(), "replace")) && st.path){
+    await loadDir(rootPath(), "replace");   // папки нет/устарела ссылка — открываем свой корень
+  }
+  delResume();
 }
 
 /* ---------- проверка дисков сервера (SMART) ---------- */
@@ -1344,10 +1379,7 @@ $("loginForm").onsubmit = async e => {
   try {
     await post("/api/login", { user: $("user").value, password: $("pw").value });
     $("pw").value = "";
-    showApp();
-    await loadDisks();
-    await loadDir("");
-    delResume();
+    await boot();               // роль, диски и папка — по данным сессии
   } catch (err) { $("loginErr").textContent = err.message; }
 };
 $("btnLogout").onclick = async () => { try { await post("/api/logout", {}); } catch (e) {} showLogin(); };
