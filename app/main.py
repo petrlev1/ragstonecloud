@@ -11,19 +11,23 @@ import time
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from app import (auth, config as cfg_mod, deleter, disks, indexer, preview,
-                 shares, smart, storage)
+                 ragusers, shares, smart, storage)
 
 cfg = cfg_mod.load()
 storage.ROOT = cfg["root"]
 SECRET = cfg["secret"]
 PW = cfg["password"]
 USER = (cfg.get("user") or "").strip()   # логин для входа; пусто = только пароль
+# логины RAG, которым в облаке открыт весь сервер (как владельцу)
+RAG_ADMINS = {(u or "").strip().casefold()
+              for u in (cfg.get("rag_admin_users") or []) if (u or "").strip()}
+
 SESSION_DAYS = int(cfg.get("session_days", 30))
 HIDE_DOT = bool(cfg.get("hide_dot", True))
 INDEX = os.path.join(cfg_mod.BASE, "static", "index.html")
@@ -42,6 +46,8 @@ disks.init(cfg)
 smart.init(cfg)
 # миниатюры/предпросмотр: кэш миниатюр вне хранилища (не в git)
 preview.init(cfg)
+# пользователи RAG (ragstone.ru): вход по их логину/паролю, личные папки, квота, SSO
+ragusers.init(cfg)
 
 app = FastAPI(title="Облако", docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=os.path.join(cfg_mod.BASE, "static")), name="static")
@@ -61,10 +67,42 @@ async def validation_handler(request: Request, exc: RequestValidationError):
 
 # ---------- авторизация ----------
 
-def require_auth(request: Request):
+# пути без сессии (гостевые ссылки): ограничение папкой пользователя к ним не применяется
+GUEST_PATHS = ("/s/", "/api/s/")
+
+
+def identity(request: Request) -> dict:
+    """Текущая сессия: {'role': 'owner'|'user', 'uid': int}; 401, если входа нет."""
     token = request.cookies.get(LOGIN_COOKIE)
-    if not token or not auth.check_token(SECRET, token):
+    claims = auth.parse_token(SECRET, token) if token else None
+    if not claims:
         raise HTTPException(401, "Требуется вход")
+    return claims
+
+
+require_auth = identity      # историческое имя зависимости (используется в эндпоинтах)
+
+
+def owner_only(who: dict = Depends(identity)) -> dict:
+    """Функции владельца сервера (SMART, управление индексом) — только ему."""
+    if who.get("role") != "owner":
+        raise HTTPException(403, "Доступно только владельцу облака")
+    return who
+
+
+@app.middleware("http")
+async def _session_scope(request: Request, call_next):
+    """Изоляция на сервере: операции пользователя RAG ограничены его папкой."""
+    token = request.cookies.get(LOGIN_COOKIE)
+    claims = None
+    if token and not request.url.path.startswith(GUEST_PATHS):
+        claims = auth.parse_token(SECRET, token)
+    if claims and claims.get("role") == "user":
+        storage.set_prefix(ragusers.prefix_rel(claims["uid"]))
+    try:
+        return await call_next(request)
+    finally:
+        storage.set_prefix("")
 
 
 _login_attempts: dict[str, list[float]] = {}  # ip -> метки попыток (последняя минута)
@@ -107,13 +145,20 @@ def login(body: LoginIn, request: Request):
     ip = _client_ip(request)
     if _rate_limited(ip):
         raise HTTPException(429, "Слишком много попыток — подожди минуту")
-    ok_user = auth.check_login(body.user, USER)
-    ok_pw = auth.check_password(body.password, PW)
-    if not (ok_user and ok_pw):
+    who = None
+    if auth.check_login(body.user, USER) and auth.check_password(body.password, PW):
+        who = {"role": "owner", "uid": 0}          # владелец сервера
+    else:
+        rec = ragusers.authenticate(body.user, body.password)
+        if rec:
+            admin = (body.user or "").strip().casefold() in RAG_ADMINS
+            who = {"role": "owner" if admin else "user", "uid": rec["uid"]}
+    if not who:
         _log_auth_fail(ip)
         raise HTTPException(401, "Неверный логин или пароль")
-    resp = JSONResponse({"ok": True})
-    resp.set_cookie(LOGIN_COOKIE, auth.make_token(SECRET, SESSION_DAYS),
+    resp = JSONResponse({"ok": True, "admin": who["role"] == "owner"})
+    resp.set_cookie(LOGIN_COOKIE,
+                    auth.make_token(SECRET, SESSION_DAYS, who["role"], who["uid"]),
                     max_age=SESSION_DAYS * 86400, httponly=True,
                     samesite="lax", path="/")
     return resp
@@ -127,8 +172,31 @@ def logout():
 
 
 @app.get("/api/me")
-def me(_=Depends(require_auth)):
-    return {"ok": True}
+def me(who: dict = Depends(identity)):
+    """Кто вошёл: владелец (видит весь сервер) или пользователь RAG (своя папка + квота)."""
+    admin = who.get("role") == "owner"
+    uid = int(who.get("uid") or 0)
+    out = {"ok": True, "admin": admin, "uid": uid,
+           "user": (USER if not uid else ragusers.name(uid))}
+    if not admin:
+        out["quota"] = ragusers.quota_info(uid)
+    return out
+
+
+# ---------- переход из кабинета RAG («☁️ Мои файлы») ----------
+
+@app.get("/sso")
+def sso(t: str = ""):
+    """Одноразовый SSO-токен от ragstone.ru → сессия облака → сразу в свою папку."""
+    who = ragusers.check_sso(t)
+    if not who:
+        return RedirectResponse("/?sso=fail", status_code=302)
+    resp = RedirectResponse("/", status_code=302)
+    resp.set_cookie(LOGIN_COOKIE,
+                    auth.make_token(SECRET, SESSION_DAYS, "user", who["uid"]),
+                    max_age=SESSION_DAYS * 86400, httponly=True,
+                    samesite="lax", path="/")
+    return resp
 
 
 # ---------- файлы ----------
@@ -228,6 +296,16 @@ def _shares_hook(fn, *args):
         print("shares hook:", type(e).__name__, e, flush=True)
 
 
+def _size_h(n: int) -> str:
+    """Байты -> «1,2 ГБ» (для сообщений о квоте)."""
+    val = float(n or 0)
+    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
+        if val < 1024 or unit == "ТБ":
+            return (f"{val:.0f} {unit}" if unit == "Б" else f"{val:.1f} {unit}").replace(".", ",")
+        val /= 1024
+    return f"{val:.1f} ТБ"
+
+
 @app.get("/api/download")
 def api_download(path: str, _=Depends(require_auth)):
     p = storage.safe(path)
@@ -245,11 +323,19 @@ def api_download(path: str, _=Depends(require_auth)):
 
 @app.post("/api/upload")
 async def api_upload(path: str = "", files: list[UploadFile] = File(...),
-                     _=Depends(require_auth)):
+                     who: dict = Depends(identity)):
     d = storage.safe(path)
     if not os.path.isdir(d):
         raise HTTPException(404, "Папка не найдена")
-    n = 0
+    uid = 0 if who.get("role") == "owner" else int(who.get("uid") or 0)
+    limit = ragusers.quota() if uid else 0
+    if limit:
+        incoming = sum(int(getattr(up, "size", 0) or 0) for up in files)
+        used = ragusers.usage(uid)
+        if used + incoming > limit:
+            raise HTTPException(413, "Не хватает места: занято " + _size_h(used) +
+                                " из " + _size_h(limit) + " — освободи файлы в облаке")
+    written: list[str] = []
     for up in files:
         name = os.path.basename((up.filename or "").replace("\\", "/"))
         if not name or name in (".", ".."):
@@ -260,9 +346,20 @@ async def api_upload(path: str = "", files: list[UploadFile] = File(...),
         with open(target, "wb") as fh:
             while chunk := await up.read(1 << 20):
                 fh.write(chunk)
+        written.append(target)
+    if limit:                      # фактическая сверка: квота не превышается даже при пакетной заливке
+        used = ragusers.usage(uid)
+        if used > limit:
+            for p_ in written:
+                try:
+                    os.remove(p_)
+                except OSError:
+                    pass
+            raise HTTPException(413, "Не хватает места: лимит " + _size_h(limit) +
+                                " на пользователя — файлы не загружены")
+    for target in written:
         indexer.index_path(storage.rel_of(target))
-        n += 1
-    return {"ok": True, "uploaded": n}
+    return {"ok": True, "uploaded": len(written)}
 
 
 @app.post("/api/folder")
@@ -322,7 +419,7 @@ def api_move(body: MoveBody, _=Depends(require_auth)):
 def api_delete(body: PathBody, _=Depends(require_auth)):
     """Запускает удаление в фоне (не ждёт его): UI следит за /api/delete/status."""
     p = storage.safe(body.path)
-    if p == storage.ROOT:
+    if storage.is_root(p):
         raise HTTPException(403, "Нельзя удалить корень")
     if not (os.path.isdir(p) or os.path.isfile(p) or os.path.islink(p)):
         raise HTTPException(404, "Не найдено")
@@ -343,14 +440,27 @@ def _delete_finished(job) -> None:
 
 
 @app.get("/api/delete/status")
-def api_delete_status(_=Depends(require_auth)):
+def api_delete_status(who: dict = Depends(identity)):
     """Прогресс удаления: всего МБ/файлов, удалено, скорость, остаток; либо последний результат."""
-    return deleter.status()
+    st = deleter.status()
+    if who.get("role") != "owner":
+        job = st.get("job") or {}
+        rel = str(job.get("rel") or "")
+        pre = ragusers.prefix_rel(int(who.get("uid") or 0))
+        if rel and not (rel == pre or rel.startswith(pre + "/")):
+            return {"active": False, "job": None}   # чужая операция пользователю не видна
+    return st
 
 
 @app.post("/api/delete/cancel")
-def api_delete_cancel(_=Depends(require_auth)):
+def api_delete_cancel(who: dict = Depends(identity)):
     """Отменить текущее удаление (останавливается перед следующим файлом)."""
+    if who.get("role") != "owner":
+        job = (deleter.status().get("job") or {})
+        rel = str(job.get("rel") or "")
+        pre = ragusers.prefix_rel(int(who.get("uid") or 0))
+        if rel and not (rel == pre or rel.startswith(pre + "/")):
+            raise HTTPException(403, "Это удаление запустил не ты")
     return {"ok": True, "cancelled": deleter.cancel()}
 
 
@@ -388,22 +498,26 @@ def api_search(q: str, path: str = "", _=Depends(require_auth)):
 
 
 @app.get("/api/index")
-def api_index(_=Depends(require_auth)):
+def api_index(who: dict = Depends(identity)):
     st = indexer.status()
     return {"enabled": indexer.ENABLED, "files": indexer.count(),
             "running": st["running"], "phase": st["phase"],
             "done": st["done"], "total": st["total"],
-            "last_sync": st["last_sync"], "errors": st["errors"]}
+            "last_sync": st["last_sync"], "errors": st["errors"],
+            "admin": who.get("role") == "owner"}
 
 
 @app.post("/api/index/sync")
-def api_index_sync(_=Depends(require_auth)):
+def api_index_sync(_=Depends(owner_only)):
     started = indexer.sync_start()
     return {"ok": True, "started": started}
 
 
 @app.get("/api/disks")
-def api_disks(_=Depends(require_auth)):
+def api_disks(who: dict = Depends(identity)):
+    """Владельцу — диски сервера; пользователю RAG — одна папка с его квотой."""
+    if who.get("role") != "owner":
+        return {"disks": [ragusers.disk_info(int(who.get("uid") or 0))]}
     return {"disks": disks.stats()}
 
 
@@ -414,13 +528,13 @@ class SmartTestBody(BaseModel):
 
 
 @app.get("/api/smart")
-def api_smart(_=Depends(require_auth)):
+def api_smart(_=Depends(owner_only)):
     """Здоровье физических дисков сервера: SMART + последний self-test."""
     return smart.check()
 
 
 @app.post("/api/smart/test")
-def api_smart_test(body: SmartTestBody, _=Depends(require_auth)):
+def api_smart_test(body: SmartTestBody, _=Depends(owner_only)):
     """Короткий self-test диска (прогресс — в /api/smart)."""
     return smart.start_test(body.dev)
 
@@ -436,14 +550,15 @@ class RevokeBody(BaseModel):
 
 
 @app.get("/api/share")
-def api_share_by_path(path: str = "", _=Depends(require_auth)):
+def api_share_by_path(path: str = "", _=Depends(identity)):
     """Ссылки на конкретный объект (для диалога у строки)."""
-    links = shares.list_by_rel(path)
+    p = storage.safe(path)        # 403, если путь вне своей папки (пользователь RAG)
+    links = shares.list_by_rel(storage.rel_of(p))
     return {"links": [dict(l, url="/s/" + l["token"]) for l in links]}
 
 
 @app.post("/api/share")
-def api_share_create(body: ShareBody, _=Depends(require_auth)):
+def api_share_create(body: ShareBody, _=Depends(identity)):
     p = storage.safe(body.path)
     if not os.path.exists(p):
         raise HTTPException(404, "Не найдено")
@@ -452,16 +567,24 @@ def api_share_create(body: ShareBody, _=Depends(require_auth)):
 
 
 @app.post("/api/share/revoke")
-def api_share_revoke(body: RevokeBody, _=Depends(require_auth)):
+def api_share_revoke(body: RevokeBody, who: dict = Depends(identity)):
+    if who.get("role") != "owner":          # пользователь снимает только свои ссылки
+        rel = shares.norm(shares.rel_of(body.token))
+        pre = ragusers.prefix_rel(int(who.get("uid") or 0))
+        if not (rel == pre or rel.startswith(pre + "/")):
+            raise HTTPException(403, "Ссылка не из твоей папки")
     removed = shares.remove(body.token)
     return {"ok": True, "removed": removed}
 
 
 @app.get("/api/shares")
-def api_shares_all(_=Depends(require_auth)):
+def api_shares_all(who: dict = Depends(identity)):
     """Все активные ссылки (+ тип/размер/время объекта, если он жив)."""
     out = []
+    pre = "" if who.get("role") == "owner" else ragusers.prefix_rel(int(who.get("uid") or 0))
     for r in shares.all_():
+        if pre and not (r["rel"] == pre or r["rel"].startswith(pre + "/")):
+            continue                        # пользователю видны только его ссылки
         item = {"token": r["token"], "rel": r["rel"],
                 "created": r["created"], "url": "/s/" + r["token"]}
         try:
