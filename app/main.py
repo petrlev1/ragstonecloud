@@ -360,6 +360,9 @@ async def api_upload(path: str = "", files: list[UploadFile] = File(...),
                                 " на пользователя — файлы не загружены")
     for target in written:
         indexer.index_path(storage.rel_of(target))
+    # файлы легли в папку базы знаний ragstone — регистрируем документы и переиндексируем
+    for uid in {ragusers.uid_of_rel(storage.rel_of(t)) for t in written}:
+        ragusers.notify_kb(uid, "загрузка из облака")
     return {"ok": True, "uploaded": len(written)}
 
 
@@ -390,8 +393,11 @@ def api_rename(body: RenameBody, _=Depends(require_auth)):
         raise HTTPException(409, "Уже существует")
     old_rel = storage.rel_of(src)
     os.rename(src, dst)
-    indexer.rename_path(old_rel, storage.rel_of(dst))
-    _shares_hook(shares.rename_path, old_rel, storage.rel_of(dst))
+    new_rel = storage.rel_of(dst)
+    indexer.rename_path(old_rel, new_rel)
+    _shares_hook(shares.rename_path, old_rel, new_rel)
+    for uid in {ragusers.uid_of_rel(old_rel), ragusers.uid_of_rel(new_rel)}:
+        ragusers.notify_kb(uid, "переименование в облаке")
     return {"ok": True}
 
 
@@ -411,8 +417,11 @@ def api_move(body: MoveBody, _=Depends(require_auth)):
         raise HTTPException(409, "В папке назначения уже есть такое имя")
     old_rel = storage.rel_of(src)
     shutil.move(src, dst)
-    indexer.rename_path(old_rel, storage.rel_of(dst))
-    _shares_hook(shares.rename_path, old_rel, storage.rel_of(dst))
+    new_rel = storage.rel_of(dst)
+    indexer.rename_path(old_rel, new_rel)
+    _shares_hook(shares.rename_path, old_rel, new_rel)
+    for uid in {ragusers.uid_of_rel(old_rel), ragusers.uid_of_rel(new_rel)}:
+        ragusers.notify_kb(uid, "перенос в облаке")
     return {"ok": True}
 
 
@@ -438,6 +447,9 @@ def _delete_finished(job) -> None:
         _shares_hook(shares.delete_path, job.rel)
     elif job.done_files or job.done_dirs:
         indexer.sync_start()        # удалено частично (отмена/ошибки) — сверим индекс с диском
+    # удаление в папке базы знаний ragstone: снять документы с учёта и переиндексировать
+    if job.done_files or job.done_dirs:
+        ragusers.notify_kb(ragusers.uid_of_rel(job.rel), "удаление в облаке")
 
 
 @app.get("/api/delete/status")

@@ -17,8 +17,11 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
+import threading
 import time
+import urllib.request
 
 import psycopg
 
@@ -27,6 +30,7 @@ ROOT = ""
 DB: dict | None = None
 USERS_REL = "data/users"
 RAG_DOCS = ""                       # шаблон папки документов ragstone (если задан — это «Мои файлы»)
+RAG_API = ""                        # внутренний адрес RAG (переиндексация после загрузки из облака)
 QUOTA = 0
 SSO_SECRET: str | None = None
 SSO_TTL = 120
@@ -39,12 +43,13 @@ def log(*args):
 
 
 def init(cfg: dict) -> None:
-    global CFG, ROOT, DB, USERS_REL, RAG_DOCS, QUOTA, SSO_SECRET, SSO_TTL
+    global CFG, ROOT, DB, USERS_REL, RAG_DOCS, RAG_API, QUOTA, SSO_SECRET, SSO_TTL
     CFG = cfg
     ROOT = cfg["root"]
     DB = cfg.get("rag_db") or None
     USERS_REL = (cfg.get("users_rel") or "data/users").replace("\\", "/").strip("/")
     RAG_DOCS = (cfg.get("rag_docs_rel") or "").replace("\\", "/").strip("/")
+    RAG_API = (cfg.get("rag_api") or "").strip()
     try:
         QUOTA = int(float(cfg.get("user_quota_gb") or 0) * 1024 ** 3)
     except (TypeError, ValueError):
@@ -187,6 +192,58 @@ def disk_info(uid: int) -> dict:
     return {"rel": prefix_rel(uid), "name": "Мои файлы", "type": None,
             "total": info["limit"] or None, "used": info["used"], "free": info["free"],
             "quota": True}
+
+
+# ---------- связь с RAG: регистрация документов и переиндексация ----------
+
+_UID_RE = None
+
+
+def _uid_re():
+    """Регулярка «папка БЗ пользователя → uid» из шаблона rag_docs_rel."""
+    global _UID_RE
+    if not RAG_DOCS:
+        return None
+    if _UID_RE is None:
+        pat = re.escape(RAG_DOCS).replace(re.escape("{uid}"), r"(?P<uid>\d+)")
+        _UID_RE = re.compile("^" + pat + r"(?:/|$)")
+    return _UID_RE
+
+
+def uid_of_rel(rel: str) -> int | None:
+    """uid владельца папки БЗ по rel-пути (None — путь вне папок документов)."""
+    rx = _uid_re()
+    if not rx:
+        return None
+    m = rx.match((rel or "").replace("\\", "/").strip("/"))
+    return int(m.group("uid")) if m else None
+
+
+def notify_kb(uid: int | None, reason: str = "") -> None:
+    """Сообщить RAG, что в папке БЗ пользователя изменились файлы (фоном, без ожидания).
+
+    RAG сверит папку с user_documents и запустит переиндексацию базы знаний.
+    Ошибка связи не влияет на операцию пользователя — только пишется в лог.
+    """
+    if not uid or not RAG_API or not SSO_SECRET:
+        return
+
+    def _worker():
+        body = json.dumps({"uid": int(uid), "reason": reason},
+                          ensure_ascii=False).encode()
+        mac = hmac.new(SSO_SECRET.encode(), body, hashlib.sha256).hexdigest()
+        req = urllib.request.Request(
+            RAG_API.rstrip("/") + "/api/internal/kb-sync", data=body, method="POST",
+            headers={"Content-Type": "application/json", "X-Cloud-Signature": mac})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.loads(r.read() or b"{}")
+            log(f"БЗ пользователя #{uid} синхронизирована ({reason}): "
+                f"+{data.get('added', '?')} / -{data.get('removed', '?')}")
+        except Exception as exc:
+            log(f"БЗ #{uid} ({reason}) не синхронизирована:", type(exc).__name__, exc)
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 # ---------- SSO: переход «☁️ Мои файлы» из кабинета RAG ----------
