@@ -717,10 +717,20 @@ function fileUrl(rel){ return "/api/file?path=" + encodeURIComponent(rel); }
 function dlUrl(rel){ return "/api/download?path=" + encodeURIComponent(rel); }
 function thumbUrl(rel){ return "/api/thumb?path=" + encodeURIComponent(rel) + "&w=240"; }
 function textUrlFn(rel){ return "/api/text?path=" + encodeURIComponent(rel); }
+/* сохранение правки txt (только под сессией; у гостевой ссылки такой ручки нет) */
+function saveTextFn(rel, text){
+  return fetch("/api/save_text", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({path: rel, text: text})
+  }).then(r => r.json().then(d => ({ok: r.ok, d: d})).catch(() => ({ok: false, d: null})),
+          () => ({ok: false, d: null}));
+}
 function filesHere(){ return sortItems(S.items || []).filter(x => x.type !== "dir"); }
 function viewOpts(extra){
   return Object.assign({
     fileUrl: fileUrl, dlUrl: dlUrl, thumbUrl: thumbUrl, textUrl: textUrlFn,
+    saveText: saveTextFn, onSaved: () => applyView(),
     iconOf: iconOf, fmtSize: fmtSize, fmtDate: fmtDate,
     /* в результатах поиска карточка галереи показывает путь до папки (кликабельный) */
     crumbsOf: it => (S.search ? parentChain(it) : null),

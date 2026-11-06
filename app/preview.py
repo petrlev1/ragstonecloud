@@ -27,6 +27,7 @@ MAX_W = 1024                 # потолок (кэш не должен пухн
 CACHE_LIMIT = 40000          # файлов в кэше; при переполнении удаляются самые старые
 MAX_TEXT_BYTES = 2 * 1024 * 1024   # сколько читать из текстового файла в предпросмотр
 MAX_TEXT_FILE = 8 * 1024 * 1024    # больше этого — вообще отказываем
+MAX_EDIT_BYTES = MAX_TEXT_BYTES    # правим только то, что видно целиком (иначе сохранили бы обрезанное)
 
 CACHE_DIR = ""
 _lock = threading.Lock()
@@ -126,6 +127,18 @@ def thumb(abs_path: str, w: int = DEFAULT_W):
     return out
 
 
+def _decode(raw: bytes) -> tuple[str, str, bool]:
+    """(текст, кодировка, точная ли расшифровка): utf-8, затем cp1251, затем utf-8 с заменами."""
+    try:
+        return raw.decode("utf-8"), "utf-8", True
+    except UnicodeDecodeError:
+        pass
+    try:
+        return raw.decode("cp1251"), "cp1251", True
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", "replace"), "utf-8 (некоторые байты заменены)", False
+
+
 def read_text(abs_path: str) -> dict:
     """Текст файла для предпросмотра: utf-8, при неудаче cp1251, длинное обрезается."""
     st = os.stat(abs_path)
@@ -135,15 +148,62 @@ def read_text(abs_path: str) -> dict:
         raw = fh.read(MAX_TEXT_BYTES + 1)
     truncated = len(raw) > MAX_TEXT_BYTES
     raw = raw[:MAX_TEXT_BYTES]
-    enc = "utf-8"
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        try:
-            text = raw.decode("cp1251")
-            enc = "cp1251"
-        except UnicodeDecodeError:
-            text = raw.decode("utf-8", "replace")
-            enc = "utf-8 (некоторые байты заменены)"
+    text, enc, _ = _decode(raw)
     return {"text": text.replace("\x00", ""), "truncated": truncated,
             "encoding": enc, "size": st.st_size}
+
+
+def _eol_of(raw: bytes) -> str:
+    """Преобладающий перевод строки файла (CRLF у windows-текстов, LF у остальных)."""
+    crlf = raw.count(b"\r\n")
+    lf = raw.count(b"\n") - crlf
+    return "\r\n" if crlf and crlf >= lf else "\n"
+
+
+def save_text(abs_path: str, text: str) -> dict:
+    """Записать отредактированный текст файла на место прежнего (атомарно).
+
+    Кодировку и перевод строки исходника сохраняем: txt из Windows (cp1251 + CRLF)
+    остаётся таким же, как был, — иначе файл «поехал» бы для сторонних редакторов
+    и для RAG. Текст длиннее лимита не принимаем: иначе сохранили бы обрезанное.
+    Возвращает {size, mtime, encoding, eol}.
+    """
+    st = os.stat(abs_path)
+    if st.st_size > MAX_EDIT_BYTES:
+        raise ValueError("Файл больше 2 МБ — редактирование в облаке только для небольших файлов")
+    with open(abs_path, "rb") as fh:
+        old_raw = fh.read()
+    _, enc, exact = _decode(old_raw)
+    eol = _eol_of(old_raw)
+    body = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    out_text = body if eol == "\n" else body.replace("\n", "\r\n")
+    if not exact:
+        enc = "utf-8"                    # исходник был битым — пишем чистый utf-8
+    try:
+        data = out_text.encode(enc)
+    except (UnicodeEncodeError, LookupError):
+        enc, data = "utf-8", out_text.encode("utf-8")
+    if len(data) > MAX_EDIT_BYTES:
+        raise ValueError("Текст больше 2 МБ — сохранить нельзя")
+
+    tmp = f"{abs_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.chmod(tmp, st.st_mode & 0o7777)
+            os.chown(tmp, st.st_uid, st.st_gid)
+        except OSError:
+            pass                          # права/владелец — как получится (чужой диск)
+        os.replace(tmp, abs_path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    st = os.stat(abs_path)
+    return {"size": st.st_size, "mtime": int(st.st_mtime), "encoding": enc,
+            "eol": "CRLF" if eol == "\r\n" else "LF"}

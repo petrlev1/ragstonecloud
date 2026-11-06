@@ -8,7 +8,12 @@
    Gal.isOpen() -> bool
 
    opt: { fileUrl(rel), dlUrl(rel), textUrl(rel), thumbUrl(rel)|null,
-          iconOf(name, isDir), fmtSize(n), fmtDate(ts), onOpen(item), onShare(item) }
+          iconOf(name, isDir), fmtSize(n), fmtDate(ts), onOpen(item), onShare(item),
+          saveText(rel, text) -> Promise<{ok, d}>, onSaved(item) }
+
+   Правка .txt: если передан saveText, рядом со «Скачать» появляется «✎ Изменить».
+   Гостевая страница (share.html) saveText не передаёт — там кнопки нет и серверной
+   ручки записи тоже нет: расшаренный файл править нельзя.
 
    Рендер только через textContent/createElement (XSS-безопасно), без innerHTML. */
 window.Gal = (function(){
@@ -137,6 +142,10 @@ window.Gal = (function(){
 
   function close(){
     if (!LB) return;
+    if (LB.edit){
+      if (LB.edit.dirty && !window.confirm("Изменения не сохранены. Закрыть без сохранения?")) return;
+      LB.edit = null;
+    }
     stopMedia(LB.refs.stage);
     if (LB.refs.root && LB.refs.root.parentNode) LB.refs.root.parentNode.removeChild(LB.refs.root);
     document.removeEventListener("keydown", onKey, true);
@@ -162,6 +171,12 @@ window.Gal = (function(){
     r.up = el("a", "lbbtn", "⬇ Скачать");
     r.up.title = "Скачать файл на устройство";
     btns.appendChild(r.up);
+    r.edit = el("button", "lbbtn", "✎ Изменить");
+    r.edit.type = "button";
+    r.edit.title = "Редактировать текст файла";
+    r.edit.style.display = "none";          // показываем только для .txt (и только под сессией)
+    r.edit.onclick = () => { if (!LB.edit && LB.textInfo) startEdit(LB.files[LB.i], LB.textInfo); };
+    btns.appendChild(r.edit);
     r.tab = el("a", "lbbtn", "⤢");
     r.tab.target = "_blank";
     r.tab.rel = "noopener";
@@ -226,6 +241,104 @@ window.Gal = (function(){
     im.src = LB.opt.fileUrl(f.rel);
   }
 
+  /* ---------- «размер · дата · N из M» (после правки показываем свежие) ---------- */
+
+  function refreshMeta(it){
+    const r = LB.refs, opt = LB.opt;
+    r.meta.textContent = "";
+    const info = [opt.fmtSize ? opt.fmtSize(it.size) : "",
+                  it.mtime && opt.fmtDate ? opt.fmtDate(it.mtime) : ""].filter(Boolean).join(" · ");
+    if (info) r.meta.appendChild(document.createTextNode(info + " · "));
+    r.cnt.textContent = (LB.i + 1) + " из " + LB.files.length;
+    r.meta.appendChild(r.cnt);
+  }
+
+  /* ---------- правка .txt прямо в окне просмотра ---------- */
+
+  function exitEdit(){
+    const ed = LB && LB.edit;
+    if (!ed) return;
+    if (ed.wrap.parentNode) ed.wrap.parentNode.replaceChild(ed.pre, ed.wrap);
+    LB.edit = null;
+    LB.refs.edit.style.display = "";
+    LB.refs.hint.textContent = LB.files.length > 1 ? "← → перелистывание · Esc закрыть" : "Esc закрыть";
+  }
+
+  function startEdit(it, d){
+    const r = LB.refs;
+    if (LB.edit) return;
+    const pre = r.stage.querySelector(".lbpre");
+    if (!pre) return;
+    const wrap = el("div", "lbedit");
+    const ta = el("textarea", "lbedit-ta");
+    ta.value = d.text;
+    ta.spellcheck = false;
+    const bar = el("div", "lbedit-bar");
+    const msg = el("span", "lbedit-msg",
+                   d.encoding && d.encoding !== "utf-8" ? "кодировка файла: " + d.encoding : "");
+    const ok = el("button", "lbbtn primary", "💾 Сохранить");
+    ok.type = "button";
+    const cancel = el("button", "lbbtn", "Отмена");
+    cancel.type = "button";
+    bar.appendChild(msg);
+    bar.appendChild(ok);
+    bar.appendChild(cancel);
+    wrap.appendChild(ta);
+    wrap.appendChild(bar);
+
+    LB.edit = { it: it, i: LB.i, pre: pre, wrap: wrap, ta: ta, msg: msg, ok: ok,
+                dirty: false, orig: d.text };
+    pre.parentNode.replaceChild(wrap, pre);
+    r.edit.style.display = "none";
+    r.hint.textContent = "Ctrl+S сохранить · Esc отмена";
+    ta.addEventListener("input", () => { LB.edit && (LB.edit.dirty = ta.value !== LB.edit.orig); });
+    ta.addEventListener("keydown", e => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")){ e.preventDefault(); saveEdit(); }
+    });
+    ok.onclick = saveEdit;
+    cancel.onclick = cancelEdit;
+    ta.focus();
+  }
+
+  function cancelEdit(){
+    const ed = LB && LB.edit;
+    if (!ed) return;
+    if (ed.dirty && !window.confirm("Изменения не сохранены. Отменить правку?")) return;
+    exitEdit();
+  }
+
+  function saveEdit(){
+    const ed = LB && LB.edit;
+    if (!ed || ed.ok.disabled) return;
+    ed.ok.disabled = true;
+    ed.msg.className = "lbedit-msg";
+    ed.msg.textContent = "Сохраняю…";
+    Promise.resolve(LB.opt.saveText(ed.it.rel, ed.ta.value)).then(res => {
+      if (!LB || LB.edit !== ed) return;
+      ed.ok.disabled = false;
+      if (!res || !res.ok){
+        ed.msg.className = "lbedit-msg err";
+        ed.msg.textContent = (res && res.d && res.d.error) || "Не удалось сохранить";
+        return;
+      }
+      const d = res.d || {};
+      ed.orig = ed.ta.value;
+      ed.dirty = false;
+      ed.pre.textContent = ed.ta.value;         // предпросмотр под редактором — уже новый
+      if (d.size != null) ed.it.size = d.size;
+      if (d.mtime != null) ed.it.mtime = d.mtime;
+      if (LB.textInfo) LB.textInfo.text = ed.ta.value;
+      exitEdit();
+      refreshMeta(ed.it);
+      if (LB.opt.onSaved){ try { LB.opt.onSaved(ed.it); } catch (e) {} }
+    }).catch(() => {
+      if (!LB || LB.edit !== ed) return;
+      ed.ok.disabled = false;
+      ed.msg.className = "lbedit-msg err";
+      ed.msg.textContent = "Не удалось сохранить";
+    });
+  }
+
   function show(i){
     if (!LB) return;
     const files = LB.files, opt = LB.opt, r = LB.refs;
@@ -233,17 +346,22 @@ window.Gal = (function(){
     LB.i = i;
     const it = files[i];
 
+    if (LB.edit){                        // несохранённая правка в предыдущем файле
+      if (LB.edit.dirty && !window.confirm("Изменения не сохранены. Перейти к другому файлу?")){
+        LB.i = LB.edit.i;
+        return;
+      }
+      exitEdit();
+    }
+    LB.textInfo = null;
+
     stopMedia(r.stage);
     for (const n of Array.prototype.slice.call(r.stage.children))
       if (n !== r.prev && n !== r.next) r.stage.removeChild(n);
 
     r.title.textContent = it.name;
-    const bits = [opt.fmtSize ? opt.fmtSize(it.size) : "", it.mtime && opt.fmtDate ? opt.fmtDate(it.mtime) : ""];
-    r.meta.textContent = "";
-    const info = bits.filter(Boolean).join(" · ");
-    if (info) r.meta.appendChild(document.createTextNode(info + " · "));
-    r.cnt.textContent = (i + 1) + " из " + files.length;
-    r.meta.appendChild(r.cnt);
+    refreshMeta(it);
+    r.edit.style.display = "none";
     r.up.href = opt.dlUrl(it.rel);
     r.up.setAttribute("download", it.name);
     r.tab.href = opt.fileUrl(it.rel);
@@ -309,6 +427,9 @@ window.Gal = (function(){
           return;
         }
         pre.textContent = res.d.text + (res.d.truncated ? "\n\n… показаны первые 2 МБ файла" : "");
+        LB.textInfo = res.d;                 // для кнопки «✎ Изменить»
+        if (opt.saveText && ext(it.name) === "txt" && !res.d.truncated)
+          r.edit.style.display = "";
       }).catch(() => { if (LB && LB.i === mine) pre.textContent = "Не удалось прочитать файл"; });
 
     } else {
@@ -331,6 +452,10 @@ window.Gal = (function(){
     if (!LB) return;
     // открыт модальный диалог (напр. «Поделиться») — Esc и стрелки принадлежат ему
     if (document.querySelector("dialog[open]")) return;
+    if (LB.edit){                      // в редакторе клавиши (стрелки, Home/End) — для текста
+      if (e.key === "Escape"){ e.preventDefault(); e.stopPropagation(); cancelEdit(); }
+      return;
+    }
     if (e.key === "ArrowLeft"){ e.preventDefault(); e.stopPropagation(); show(LB.i - 1); }
     else if (e.key === "ArrowRight"){ e.preventDefault(); e.stopPropagation(); show(LB.i + 1); }
     else if (e.key === "Escape"){ e.preventDefault(); e.stopPropagation(); close(); }

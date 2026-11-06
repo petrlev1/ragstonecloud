@@ -221,6 +221,15 @@ class MkdirBody(BaseModel):
     name: str
 
 
+class TextSaveBody(BaseModel):
+    path: str
+    text: str
+
+
+# какие файлы правим в облаке (кнопка «✎ Изменить» рядом со «Скачать»)
+EDIT_EXTS = {"txt"}
+
+
 @app.get("/")
 def index():
     return FileResponse(INDEX, media_type="text/html")
@@ -276,6 +285,41 @@ def api_text(path: str, _=Depends(require_auth)):
         raise HTTPException(413, str(exc))
     except OSError:
         raise HTTPException(400, "Не удалось прочитать файл")
+
+
+@app.post("/api/save_text")
+def api_save_text(body: TextSaveBody, who: dict = Depends(identity)):
+    """Сохранить отредактированный текст файла (.txt) — «✎ Изменить» в окошке просмотра.
+
+    Только под сессией: у гостевой ссылки (/api/s/…) ручки записи нет вовсе, поэтому
+    расшаренный файл править нельзя. Кодировка/перевод строки исходника сохраняются
+    (см. preview.save_text). Права — как у всего облака: storage.safe() не пускает
+    за пределы хранилища и за папку пользователя RAG.
+    """
+    p = storage.safe(body.path)
+    if os.path.islink(p):
+        raise HTTPException(400, "Символические ссылки не редактируются")
+    if not os.path.isfile(p):
+        raise HTTPException(404, "Файл не найден")
+    if preview.ext_of(p) not in EDIT_EXTS:
+        raise HTTPException(415, "Редактирование поддерживается только для .txt")
+    uid = 0 if who.get("role") == "owner" else int(who.get("uid") or 0)
+    limit = ragusers.quota() if uid else 0
+    if limit:
+        delta = len(body.text.encode("utf-8")) - os.path.getsize(p)
+        if delta > 0 and ragusers.usage(uid) + delta > limit:
+            raise HTTPException(413, "Не хватает места: правка не помещается в квоту")
+    try:
+        res = preview.save_text(p, body.text)
+    except ValueError as exc:
+        raise HTTPException(413, str(exc))
+    except OSError:
+        raise HTTPException(400, "Не удалось сохранить файл")
+    rel = storage.rel_of(p)
+    indexer.index_path(rel)             # поиск видит новый текст сразу
+    # правка в папке базы знаний ragstone — RAG перечитает документ
+    ragusers.notify_kb(ragusers.uid_of_rel(rel), "правка файла в облаке")
+    return {"ok": True, **res}
 
 
 def _zip_dir(abs_dir: str):

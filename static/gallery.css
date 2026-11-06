@@ -44,6 +44,16 @@ body.lb-open{overflow:hidden}
 .lbpdf{width:100%;height:100%;border:none;background:#fff;border-radius:6px}
 .lbpre{max-width:100%;max-height:100%;overflow:auto;margin:0;padding:14px 16px;background:#fbfbfc;color:#1f2328;
        border-radius:8px;font:13px/1.5 ui-monospace,Consolas,"Courier New",monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+/* правка txt: текстовое поле на весь экран + панель «Сохранить / Отмена» */
+.lbedit{display:flex;flex-direction:column;gap:8px;width:100%;height:100%;min-height:0}
+.lbedit-ta{flex:1;min-height:0;width:100%;box-sizing:border-box;resize:none;padding:12px 14px;
+           border:1px solid rgba(255,255,255,.28);border-radius:8px;background:#fbfbfc;color:#1f2328;
+           font:13px/1.5 ui-monospace,Consolas,"Courier New",monospace;white-space:pre;overflow:auto}
+.lbedit-ta:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.lbedit-bar{display:flex;align-items:center;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.lbedit-msg{flex:1 1 100%;order:-1;font-size:12px;color:#c9ced6;overflow-wrap:anywhere}
+.lbedit-msg.err{color:#ffb4b4}
+.lbedit-msg.ok{color:#b8f0c0}
 .lbaudio{text-align:center}
 .lbaudio .gico2{font-size:56px;margin-bottom:8px}
 .lbaudio .lbl{color:#c9ced6;margin-bottom:12px;overflow-wrap:anywhere}
