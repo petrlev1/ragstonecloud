@@ -27,12 +27,23 @@
   .crumbs a{color:var(--accent);text-decoration:none;padding:2px 4px;border-radius:4px}
   .crumbs a:hover{background:#e8f0fe}
   .crumbs .sep{color:var(--muted)}
-  #q{min-width:180px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font:inherit}
+  /* поле поиска: обёртка держит место в ряду, внутри — само поле и крестик сброса */
+  .qbox{position:relative;display:flex;flex:0 0 auto;width:180px;min-width:0}
+  #q{width:100%;min-width:0;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font:inherit;background:#fff}
+  #q:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(31,111,235,.14)}
+  #q.has-clear{padding-right:30px}
+  #qClear{position:absolute;right:4px;top:50%;transform:translateY(-50%);display:none;align-items:center;justify-content:center;
+          width:24px;height:24px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--muted);
+          font-size:13px;line-height:1;cursor:pointer}
+  #qClear:hover{background:rgba(16,22,26,.08);color:var(--text)}
+  #qClear.on{display:flex}
   /* десктоп: клик по поиску — поле раздвигается вправо ПОВЕРХ шапки, ряд кнопок не перестраивается
      (ширину и компенсирующий отрицательный margin-right ставит expandSearch(), см. скрипт) */
   @media (min-width:641px){
-    #q{width:180px;background:#fff;transition:width .22s ease, margin-right .22s ease, box-shadow .22s ease}
-    #q.qopen{position:relative;z-index:20;flex:0 0 auto;box-shadow:0 6px 18px rgba(16,22,26,.16)}
+    .qbox{transition:width .22s ease, margin-right .22s ease}
+    .qbox.qopen{position:relative;z-index:20}
+    .qbox.qopen #q{box-shadow:0 6px 18px rgba(16,22,26,.16), 0 0 0 3px rgba(31,111,235,.14)}
+    #q{transition:box-shadow .22s ease}
   }
   select{padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:#fff;font:inherit;color:var(--text);max-width:190px}
   #diskInfo{white-space:nowrap}
@@ -154,8 +165,8 @@
           overflow-wrap:normal;-webkit-overflow-scrolling:touch;scrollbar-width:none}
   .crumbs::-webkit-scrollbar{display:none}
   .crumbs a,.crumbs .sep{flex:0 0 auto}
-  #q{min-width:0;flex:1 1 100%;order:9;display:none}
-  header.search-open #q{display:block}
+  .qbox{display:none;flex:1 1 100%;order:9;min-width:0;width:auto}
+  header.search-open .qbox{display:flex}
   header button{padding:5px 10px}
   /* на мобильном заголовки не прячем — это панель сортировки */
   thead{display:block}
@@ -225,7 +236,10 @@
     <select id="diskSel" title="Диск"></select>
     <span id="diskInfo" class="mini"></span>
     <div class="crumbs" id="crumbs"></div>
-    <input id="q" placeholder="Поиск по имени и содержимому…" autocomplete="off">
+    <span class="qbox" id="qbox">
+      <input id="q" placeholder="Поиск по имени и содержимому…" autocomplete="off">
+      <button id="qClear" type="button" title="Сбросить поиск" aria-label="Сбросить поиск">✕</button>
+    </span>
     <div class="htools">
       <button id="btnSearch" title="Поиск" aria-label="Поиск" aria-expanded="false">
         <svg class="vic" viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12.8 12.8 17.5 17.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -457,14 +471,6 @@ function renderCrumbs(){
     box.appendChild(a);
     box.appendChild(Object.assign(document.createElement("span"), { className: "sep", textContent: "›" }));
     box.appendChild(Object.assign(document.createElement("span"), { textContent: "🔗 Ссылки" }));
-    return;
-  }
-  if (S.search) {
-    const a = document.createElement("a");
-    a.textContent = "✕ Поиск: «" + S.search.q + "»";
-    a.title = "Вернуться в папку";
-    a.onclick = () => { S.search = null; $("q").value = ""; loadDir(S.cur, "push"); };
-    box.appendChild(a);
     return;
   }
   const parts = S.cur ? S.cur.split("/") : [];
@@ -847,7 +853,7 @@ function syncSortSel(){
 }
 
 async function loadDir(path, hist){
-  S.cur = path || ""; S.search = null; S.view = "browse"; $("q").value = "";
+  S.cur = path || ""; S.search = null; S.view = "browse"; $("q").value = ""; syncClear();
   headerBrowse(true);
   setDateCol("Изменён", "Сортировать по дате изменения");
   setNote("");
@@ -869,7 +875,7 @@ async function loadDir(path, hist){
 async function runSearch(q, hist, keepInput){
   q = (q == null ? $("q").value : q).trim();
   if (!q || S.busy) return false;
-  if (!keepInput) $("q").value = q;
+  if (!keepInput) { $("q").value = q; syncClear(); }
   S.busy = true;
   const t0 = Date.now();
   const timer = setInterval(() => setNote(`Ищу… ${Math.round((Date.now() - t0) / 1000)} с`), 1000);
@@ -929,7 +935,7 @@ function uploadFiles(list, overwrite){
 
 /* ---------- общие ссылки ---------- */
 function headerBrowse(on){
-  $("q").classList.toggle("hidden", !on);
+  $("qbox").classList.toggle("hidden", !on);
   $("btnSearch").classList.toggle("hidden", !on);
   $("btnView").classList.toggle("hidden", !on);
   /* «⟳ Индекс» — кнопка владельца: у пользователя RAG остаётся скрытой */
@@ -981,6 +987,7 @@ function applyRole(){
 async function loadShares(){
   S.view = "shares"; S.search = null; S.cur = "";
   $("q").value = "";
+  syncClear();
   headerBrowse(false);
   $("grid").classList.add("hidden");
   $("grid").textContent = "";
@@ -1469,13 +1476,23 @@ $("loginForm").onsubmit = async e => {
 $("btnLogout").onclick = async () => { try { await post("/api/logout", {}); } catch (e) {} showLogin(); };
 $("q").onkeydown = e => {
   if (e.key === "Enter"){ clearTimeout(liveTimer); runSearch(null, "push"); }
-  if (e.key === "Escape" && $("q").value){
-    e.stopPropagation();
-    clearTimeout(liveTimer); liveSeq++;
-    $("q").value = "";
-    if (S.search){ S.search = null; loadDir(S.cur, "replace"); }
-  }
+  if (e.key === "Escape" && $("q").value){ e.stopPropagation(); resetSearch(); }
 };
+/* крестик в поле поиска — обычный сброс (вместо прежней синей ссылки в крошках) */
+function syncClear(){
+  const has = !!$("q").value;
+  $("qClear").classList.toggle("on", has);
+  $("q").classList.toggle("has-clear", has);
+}
+function resetSearch(){
+  clearTimeout(liveTimer); liveSeq++;
+  $("q").value = "";
+  syncClear();
+  if (S.search){ S.search = null; loadDir(S.cur, "replace"); }
+}
+$("qClear").onclick = e => { e.stopPropagation(); resetSearch(); $("q").focus(); };
+/* крестик не забирает фокус у поля: иначе blur схлопывает поле раньше, чем случится клик */
+$("qClear").onmousedown = e => e.preventDefault();
 /* поиск на лету, как в Google: ищем по мере ввода (пауза 300 мс между нажатиями) */
 let liveTimer = null, liveSeq = 0;
 function scheduleLiveSearch(){
@@ -1496,33 +1513,33 @@ async function liveSearch(){
   if (seq !== liveSeq) return;                       // пока искали, ввели другое
   if (!$("q").value.trim() && S.search){ S.search = null; loadDir(S.cur, "replace"); }
 }
-$("q").addEventListener("input", scheduleLiveSearch);
+$("q").addEventListener("input", () => { syncClear(); scheduleLiveSearch(); });
 /* десктоп: фокус в поиске — поле раздвигается вправо ПОВЕРХ шапки (кнопки остаются на местах).
    Растёт ширина, а отрицательный margin-right ровно её компенсирует, поэтому ряд не перестраивается. */
 function expandSearch(on){
-  const q = $("q"), h = document.querySelector("header"), BASE = 180;
+  const box = $("qbox"), h = document.querySelector("header"), BASE = 180;
   if (window.innerWidth <= 640){
-    q.classList.remove("qopen"); q.style.width = ""; q.style.marginRight = "";
+    box.classList.remove("qopen"); box.style.width = ""; box.style.marginRight = "";
     return;
   }
-  const hr = h.getBoundingClientRect(), qr = q.getBoundingClientRect();
+  const hr = h.getBoundingClientRect(), br = box.getBoundingClientRect();
   const padR = parseFloat(getComputedStyle(h).paddingRight) || 0;
-  const w = Math.max(BASE, Math.floor(hr.right - padR - qr.left));
+  const w = Math.max(BASE, Math.floor(hr.right - padR - br.left));
   if (on){
-    if (!q.classList.contains("qopen")){
-      q.classList.add("qopen");
-      q.style.width = BASE + "px"; q.style.marginRight = "0px";
+    if (!box.classList.contains("qopen")){
+      box.classList.add("qopen");
+      box.style.width = BASE + "px"; box.style.marginRight = "0px";
       requestAnimationFrame(() => {                 // стартовое значение → конечное: анимация пошла
-        q.style.width = w + "px"; q.style.marginRight = -(w - BASE) + "px";
+        box.style.width = w + "px"; box.style.marginRight = -(w - BASE) + "px";
       });
     } else {
-      q.style.width = w + "px"; q.style.marginRight = -(w - BASE) + "px";   // ресайз окна
+      box.style.width = w + "px"; box.style.marginRight = -(w - BASE) + "px";   // ресайз окна
     }
   } else {
-    q.style.width = BASE + "px"; q.style.marginRight = "0px";
+    box.style.width = BASE + "px"; box.style.marginRight = "0px";
     setTimeout(() => {
-      if (document.activeElement === q) return;
-      q.classList.remove("qopen"); q.style.width = ""; q.style.marginRight = "";
+      if (document.activeElement === $("q")) return;
+      box.classList.remove("qopen"); box.style.width = ""; box.style.marginRight = "";
     }, 240);
   }
 }
