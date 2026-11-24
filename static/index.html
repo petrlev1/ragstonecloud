@@ -12,7 +12,7 @@
   *{box-sizing:border-box}
   body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--text);background:var(--bg)}
   .hidden{display:none!important}
-  header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:#fff;border-bottom:1px solid var(--border);position:sticky;top:0;flex-wrap:wrap}
+  header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:#fff;border-bottom:1px solid var(--border);position:sticky;top:0;flex-wrap:wrap;z-index:30}
   .brand{font-size:18px;font-weight:700;white-space:nowrap}
   /* путь (крошки): отдельная строка во всю ширину шапки, без горизонтальной прокрутки —
      длинный путь переносится на следующую строку, а не уезжает за край */
@@ -170,14 +170,14 @@
               display:flex;flex-wrap:wrap;align-items:center;gap:1px}
   /* действия в шапке: бургер-меню вместо ряда кнопок, переключатель вида — квадратной иконкой */
   .brand{order:1;flex:1 1 auto;min-width:0}
-  .htools{display:flex;align-items:center;gap:8px;margin-left:auto;order:2}
+  .htools{display:flex;align-items:center;gap:8px;margin-left:auto;order:2;position:relative}
   #btnView{width:38px;height:38px;padding:0;justify-content:center;font-size:17px}
   #btnView .vlb{display:none}
   #btnMenu{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;padding:0;
            font-size:19px;line-height:1}
   #diskSel{order:3;flex:1 0 100%;max-width:none}
   #diskInfo{order:4;flex:1 0 100%}
-  .hmenu{display:none;position:absolute;top:calc(100% - 2px);right:8px;z-index:40;min-width:216px;
+  .hmenu{display:none;position:absolute;top:calc(100% + 8px);right:0;z-index:40;min-width:216px;
          flex-direction:column;align-items:stretch;gap:2px;background:#fff;border:1px solid var(--border);
          border-radius:10px;box-shadow:0 10px 28px rgba(16,22,26,.18);padding:6px}
   .hmenu.open{display:flex}
@@ -214,14 +214,14 @@
         <span class="vlb" id="btnViewLb">Галерея</span>
       </button>
       <button id="btnMenu" title="Меню" aria-label="Меню" aria-expanded="false" aria-controls="hMenu">☰</button>
-    </div>
-    <div class="hmenu" id="hMenu">
-      <button id="btnIndex" title="Обновить индекс поиска">⟳ Индекс</button>
-      <button id="btnUpload" title="Загрузить файлы в текущую папку">⬆ Загрузить</button>
-      <button id="btnFolder">＋ Папка</button>
-      <button id="btnShares" title="Все общие ссылки">🔗 Ссылки</button>
-      <button id="btnSmart" title="Проверка здоровья дисков сервера (SMART)">🩺 Диски</button>
-      <button id="btnLogout">Выход</button>
+      <div class="hmenu" id="hMenu">
+        <button id="btnIndex" title="Обновить индекс поиска">⟳ Индекс</button>
+        <button id="btnUpload" title="Загрузить файлы в текущую папку">⬆ Загрузить</button>
+        <button id="btnFolder">＋ Папка</button>
+        <button id="btnShares" title="Все общие ссылки">🔗 Ссылки</button>
+        <button id="btnSmart" title="Проверка здоровья дисков сервера (SMART)">🩺 Диски</button>
+        <button id="btnLogout">Выход</button>
+      </div>
     </div>
   </header>
   <main>
