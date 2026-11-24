@@ -33,6 +33,7 @@
   #btnView{display:inline-flex;align-items:center;gap:6px}
   .vic{width:18px;height:18px;fill:currentColor;flex:0 0 auto}
   .htools{display:contents}
+  #btnSearch{display:none}
   #btnMenu{display:none}
   .hmenu{display:contents}
   main{max-width:1100px;margin:0 auto;padding:14px 16px 80px}
@@ -138,8 +139,12 @@
   main{padding:10px}
   header{padding:8px 10px;gap:8px}
   header .brand{font-size:16px}
-  .crumbs{min-width:0;white-space:normal;overflow-wrap:anywhere}
-  #q{min-width:0;flex:1 1 100%;order:9}
+  .crumbs{min-width:0;white-space:nowrap;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
+          overflow-wrap:normal;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .crumbs::-webkit-scrollbar{display:none}
+  .crumbs a,.crumbs .sep{flex:0 0 auto}
+  #q{min-width:0;flex:1 1 100%;order:9;display:none}
+  header.search-open #q{display:block}
   header button{padding:5px 10px}
   /* на мобильном заголовки не прячем — это панель сортировки */
   thead{display:block}
@@ -171,12 +176,11 @@
   /* действия в шапке: бургер-меню вместо ряда кнопок, переключатель вида — квадратной иконкой */
   .brand{order:1;flex:1 1 auto;min-width:0}
   .htools{display:flex;align-items:center;gap:8px;margin-left:auto;order:2;position:relative}
-  #btnView{width:38px;height:38px;padding:0;justify-content:center;font-size:17px}
+  #btnSearch,#btnView,#btnMenu{width:38px;height:38px;padding:0;display:inline-flex;align-items:center;justify-content:center;font-size:17px}
   #btnView .vlb{display:none}
-  #btnMenu{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;padding:0;
-           font-size:19px;line-height:1}
-  #diskSel{order:3;flex:1 0 100%;max-width:none}
-  #diskInfo{order:4;flex:1 0 100%}
+  #btnMenu{font-size:19px;line-height:1}
+  #diskSel{order:3;flex:0 1 auto;min-width:0;max-width:46%}
+  #diskInfo{order:4;flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .hmenu{display:none;position:absolute;top:calc(100% + 8px);right:0;z-index:40;min-width:216px;
          flex-direction:column;align-items:stretch;gap:2px;background:#fff;border:1px solid var(--border);
          border-radius:10px;box-shadow:0 10px 28px rgba(16,22,26,.18);padding:6px}
@@ -208,6 +212,9 @@
     <div class="crumbs" id="crumbs"></div>
     <input id="q" placeholder="Поиск по имени и содержимому…" autocomplete="off">
     <div class="htools">
+      <button id="btnSearch" title="Поиск" aria-label="Поиск" aria-expanded="false">
+        <svg class="vic" viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12.8 12.8 17.5 17.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
       <button id="btnView" title="Вид: список / галерея">
         <svg id="icGrid" class="vic" viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="2" width="7" height="7" rx="1.2"/><rect x="11" y="2" width="7" height="7" rx="1.2"/><rect x="2" y="11" width="7" height="7" rx="1.2"/><rect x="11" y="11" width="7" height="7" rx="1.2"/></svg>
         <svg id="icList" class="vic hidden" viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="3.4" height="3.4" rx=".8"/><rect x="7.5" y="3.7" width="10.5" height="2" rx="1"/><rect x="2" y="8.3" width="3.4" height="3.4" rx=".8"/><rect x="7.5" y="9" width="10.5" height="2" rx="1"/><rect x="2" y="13.6" width="3.4" height="3.4" rx=".8"/><rect x="7.5" y="14.3" width="10.5" height="2" rx="1"/></svg>
@@ -323,14 +330,18 @@ function diskBrief(d){
 }
 function renderDiskInfo(d){
   const el = $("diskInfo");
+  const narrow = window.matchMedia("(max-width:640px)").matches;   // на телефоне — в одну строку с выбором диска
   if (d.quota && d.total){            // папка пользователя RAG: квота вместо места на диске
     el.textContent = `занято ${fmtSize(d.used)} из ${fmtSize(d.total)}` +
-                     (d.free != null ? ` · свободно ${fmtSize(d.free)}` : "");
+                     (!narrow && d.free != null ? ` · свободно ${fmtSize(d.free)}` : "");
     return;
   }
   el.textContent = d.total
-    ? `${d.type ? d.type + " · " : ""}занято ${fmtSize(d.used)} из ${fmtSize(d.total)} · свободно ${fmtSize(d.free)}`
+    ? (narrow
+        ? `${d.type ? d.type + " · " : ""}свободно ${fmtSize(d.free)}`
+        : `${d.type ? d.type + " · " : ""}занято ${fmtSize(d.used)} из ${fmtSize(d.total)} · свободно ${fmtSize(d.free)}`)
     : (diskBrief(d) || "нет данных");
+  el.title = d.total ? `занято ${fmtSize(d.used)} из ${fmtSize(d.total)} · свободно ${fmtSize(d.free)}` : "";
 }
 function humanRel(rel){
   const d = diskOf(rel);
@@ -460,6 +471,8 @@ function renderCrumbs(){
   add(disk.name, base);
   acc = base;
   for (const p of rest) { acc = acc ? acc + "/" + p : p; add(p, acc); }
+  /* узкий экран: путь — одна строка с прокруткой; показываем её конец (текущую папку) */
+  if (box.scrollWidth > box.clientWidth) box.scrollLeft = box.scrollWidth;
 }
 
 /* ---------- сортировка списка (клик по заголовку столбца) ---------- */
@@ -901,6 +914,7 @@ function uploadFiles(list, overwrite){
 /* ---------- общие ссылки ---------- */
 function headerBrowse(on){
   $("q").classList.toggle("hidden", !on);
+  $("btnSearch").classList.toggle("hidden", !on);
   $("btnView").classList.toggle("hidden", !on);
   /* «⟳ Индекс» — кнопка владельца: у пользователя RAG остаётся скрытой */
   $("btnIndex").classList.toggle("hidden", !on || ME.admin === false);
@@ -922,7 +936,8 @@ function buildDiskSel(){
   for (const d of DISKS){
     const o = document.createElement("option");
     o.value = d.rel;
-    o.textContent = d.name + (diskBrief(d) ? " — " + diskBrief(d) : "");
+    /* на телефоне тип/объём уже есть в строке места рядом — в списке оставляем имя */
+    o.textContent = d.name + (diskBrief(d) && !window.matchMedia("(max-width:640px)").matches ? " — " + diskBrief(d) : "");
     sel.appendChild(o);
   }
   /* у пользователя RAG диск один (его папка) — селектор не нужен */
@@ -1443,6 +1458,15 @@ setHeaderSort();
 buildSortSel();
 updateViewBtn();
 $("btnView").onclick = toggleView;
+/* поиск: на узком экране поле спрятано и открывается иконкой в шапке */
+function showSearch(on){
+  const h = document.querySelector("header");
+  const val = (on === undefined) ? !h.classList.contains("search-open") : !!on;
+  h.classList.toggle("search-open", val);
+  $("btnSearch").setAttribute("aria-expanded", val ? "true" : "false");
+  if (val) setTimeout(() => $("q").focus(), 60);
+}
+$("btnSearch").onclick = e => { e.stopPropagation(); showSearch(); };
 /* бургер-меню (узкий экран): действия спрятаны в выпадающий список под шапкой */
 function menuOpen(){ return $("hMenu").classList.contains("open"); }
 function closeMenu(){
@@ -1460,8 +1484,15 @@ $("hMenu").addEventListener("click", e => { if (e.target.closest("button")) clos
 document.addEventListener("click", e => {
   if (menuOpen() && !e.target.closest("#hMenu") && !e.target.closest("#btnMenu")) closeMenu();
 });
-document.addEventListener("keydown", e => { if (e.key === "Escape") closeMenu(); });
-window.addEventListener("resize", () => { if (window.innerWidth > 640) closeMenu(); });
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  closeMenu();
+  if (window.innerWidth <= 640) showSearch(false);
+});
+window.addEventListener("resize", () => {
+  if (window.innerWidth > 640) { closeMenu(); showSearch(false); }
+  const d = diskOf(S.cur); if (d) renderDiskInfo(d);   // подпись диска: короткая/полная
+});
 $("btnUpload").onclick = () => $("fileInput").click();
 $("fileInput").onchange = () => { uploadFiles($("fileInput").files); $("fileInput").value = ""; };
 $("btnFolder").onclick = async () => {
